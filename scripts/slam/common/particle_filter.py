@@ -106,7 +106,7 @@ class FilterOptions:
         self.options = {
             "null_dist": GaussianDistribution2D(xmean=0,ymean=0,xstd=1,ystd=1),
             "num_particles": 1000,
-            "resample_interval": 1,
+            "resample_interval": .05,
             "resample_noise_count": 5,
             "initial_weight": 1
         }

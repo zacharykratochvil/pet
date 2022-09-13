@@ -1,0 +1,6 @@
+<launch>
+	<include file="$(find witmotion_ros)/launch/witmotion.launch" />
+	
+	<node name="slam_test" pkg="pet" type="robot_localizer.py" />
+	
+</launch>

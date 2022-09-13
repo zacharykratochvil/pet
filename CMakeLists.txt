@@ -11,7 +11,9 @@ find_package(catkin REQUIRED COMPONENTS
   freenove_ros
   respeaker_ros
   witmotion_ros
+  raspicam_node
   speech_recognition_msgs
+  sensor_msgs
 )
 
 ## System dependencies are found with CMake's conventions
@@ -74,6 +76,7 @@ find_package(catkin REQUIRED COMPONENTS
    DEPENDENCIES
    freenove_ros
    speech_recognition_msgs
+   sensor_msgs
  )
 
 ################################################
@@ -108,7 +111,7 @@ find_package(catkin REQUIRED COMPONENTS
 catkin_package(
 #  INCLUDE_DIRS include
 #  LIBRARIES pet
-#  CATKIN_DEPENDS freenove_ros respeaker_ros witmotion_IMU_ros
+  CATKIN_DEPENDS freenove_ros respeaker_ros witmotion_ros sensor_msgs raspicam_node
 #  DEPENDS system_lib
 )
 

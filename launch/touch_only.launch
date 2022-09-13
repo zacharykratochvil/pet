@@ -1,0 +1,9 @@
+<launch>
+	<include file="$(find freenove_ros)/freenove.launch" />
+	
+	<node name="enable" pkg="pet" type="enable.py"/>
+	<node name="touch_commands" pkg="pet" type="touch.py"/>
+	<node name="leg_controller" pkg="pet" type="legs.py"/>
+	<node name="drive_tester" pkg="pet" type="drive_test.py"/>
+	
+</launch>

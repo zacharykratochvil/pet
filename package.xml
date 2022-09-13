@@ -51,13 +51,18 @@
   <buildtool_depend>catkin</buildtool_depend>
   <build_depend>freenove_ros</build_depend>
   <build_depend>respeaker_ros</build_depend>
-  <build_depend>witmotion_IMU_ros</build_depend>
+  <build_depend>witmotion_ros</build_depend>
+  <build_depend>sensor_msgs</build_depend>
+  <build_depend>raspicam_node</build_depend>
   <build_export_depend>freenove_ros</build_export_depend>
   <build_export_depend>respeaker_ros</build_export_depend>
-  <build_export_depend>witmotion_IMU_ros</build_export_depend>
+  <build_export_depend>witmotion_ros</build_export_depend>
+  <build_export_depend>raspicam_node</build_export_depend>
   <exec_depend>freenove_ros</exec_depend>
   <exec_depend>respeaker_ros</exec_depend>
-  <exec_depend>witmotion_IMU_ros</exec_depend>
+  <exec_depend>witmotion_ros</exec_depend>
+  <exec_depend>sensor_msgs</exec_depend>
+  <exec_depend>raspicam_node</exec_depend>
 
 
   <!-- The export tag contains other, unspecified, tags -->

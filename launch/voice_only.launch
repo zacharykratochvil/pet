@@ -1,11 +1,10 @@
 <launch>
 	<include file="$(find freenove_ros)/freenove.launch" />
 	<include file="$(find respeaker_ros)/launch/respeaker.launch" />
-	<include file="$(find witmotion_ros)/launch/witmotion.launch" />
-
+	
 	<node name="enable" pkg="pet" type="enable.py"/>
-	<!--<node name="touch_commands" pkg="pet" type="touch.py"/>-->
 	<node name="voice_commands" pkg="pet" type="commands.py"/>
-	<node name="leg_controller" pkg="pet" type="legs.py"/>	
+	<node name="leg_controller" pkg="pet" type="legs.py"/>
+	<node name="drive_tester" pkg="pet" type="drive_test.py"/>
 	
 </launch>
