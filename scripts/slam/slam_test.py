@@ -4,10 +4,10 @@ import time
 
 from sensor_msgs.msg import Imu
 
-
 if __name__ == "__main__":
 
-    # testing
+    '''
+    # testing particle filter movement phase
     robot_filter = RobotLocalizer()
     
     odo_msg = Imu()
@@ -53,3 +53,4 @@ if __name__ == "__main__":
     time.sleep(1)
 
     print(robot_filter.integrator.step())
+    '''

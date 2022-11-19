@@ -15,7 +15,18 @@ class Test:
 
         self.drive_pub = rospy.Publisher("drive_twist",
                                         TwistDuration, queue_size=10)
-        
+    
+    def m2a0(self):
+        message = TwistDuration()
+        message.velocity.linear.x = 0
+        message.velocity.linear.y = -2
+        message.velocity.linear.z = 0
+        message.velocity.angular.x = 0
+        message.velocity.angular.y = 0
+        message.velocity.angular.z = 0
+        message.duration = 2
+        self.drive_pub.publish(message)
+
     def m1a30(self):
         message = TwistDuration()
         message.velocity.linear.x = 0
@@ -40,6 +51,8 @@ class Test:
 
 if __name__ == "__main__":
     test = Test()
+    t = threading.Timer(2, test.m2a0)
+    t.start()
 
     #t1 = threading.Timer(15, test.m1a30)
     #t1.start()
