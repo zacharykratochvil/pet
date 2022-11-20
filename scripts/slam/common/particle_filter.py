@@ -180,7 +180,7 @@ class ParticleFilter:
             raise Warning("You are adding more than 80% noise at each resampling, this is not recommended.")
 
         # establish aggressive garbage collection
-        gc.set_threshold(1000,5)
+        #gc.set_threshold(1000,5)
 
         # initialize particle list
         self.particles = self.init_particles(self.options["num_particles"])
@@ -339,13 +339,14 @@ class ParticleFilter:
         '''
 
         #rotate linear coords
-        angle_1 = reference[self.ANGLE]
+        angle_1 = np.pi/180*reference[self.ANGLE]
         length = np.sqrt(point[self.X]**2 + point[self.Y]**2)
         angle_2 = np.arctan2(point[self.Y],point[self.X])
 
         x = np.cos(angle_1 + angle_2)*length + reference[self.X]
         y = np.sin(angle_1 + angle_2)*length + reference[self.Y]
-        angle = angle_1 + angle_2 + point[self.ANGLE]
+        angle = 180/np.pi*(angle_1 + angle_2) + point[self.ANGLE]
+        angle = ((angle + 540) % 360) - 180
 
 
         return np.array((x,y,angle,1))

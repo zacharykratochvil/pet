@@ -57,12 +57,12 @@ class RobotLocalizer(pf.ParticleFilter):
         self.weight_timer = threading.Timer(self.options["weight_interval"], self.weight)
         self.publish_timer = threading.Timer(self.options["publish_interval"], self.publish_particles)
 
-        self.drive_sub = rospy.Subscriber("drive_twist", TwistDuration, self.integrator.on_twist, queue_size=2)
-        self.witmotion_sub = rospy.Subscriber("imu", Imu, self.integrator.on_odo, queue_size=2)
-        self.ultra_sub = rospy.Subscriber("ultrasonic_distance", SensorDistance, self.accumulator.on_ultra, queue_size=2)
-        self.map_sub = rospy.Publisher("map", PointCloud, self.map, queue_size=2)
+        self.drive_sub = rospy.Subscriber("drive_twist", TwistDuration, self.integrator.on_twist, queue_size=1)
+        self.witmotion_sub = rospy.Subscriber("imu", Imu, self.integrator.on_odo, queue_size=100)
+        self.ultra_sub = rospy.Subscriber("ultrasonic_distance", SensorDistance, self.accumulator.on_ultra, queue_size=1)
+        self.map_sub = rospy.Publisher("map", PointCloud, self.map, queue_size=1)
 
-        self.measurement_pub = rospy.Publisher("measured_particles", PointCloud, queue_size=2)
+        self.measurement_pub = rospy.Publisher("measured_particles", PointCloud, queue_size=1)
         self.particle_pub = rospy.Publisher("robot_particles", PointCloud, queue_size=1)
 
     def start(self):
@@ -237,7 +237,7 @@ class Integrator:
         self.timer = threading.Timer(0, self._clear_twist)
 
     def _clear_twist(self):
-        self.update_integral()
+        self.update_integral(time.time())
         self.latest_twist = {"linear_vel":(0.0,0.0,0.0),"angular_vel":(0.0,0.0,0.0)}
 
     def on_twist(self, msg):
@@ -254,7 +254,7 @@ class Integrator:
         self.timer.start()
 
         # update integrals
-        self.update_integral()
+        self.update_integral(time.time())
 
         # update twists
         self.latest_twist["linear_vel"] = (
@@ -288,8 +288,10 @@ class Integrator:
                 msg.angular_velocity.z*180/np.pi
             )
 
+        stamp = msg.header.stamp.secs + msg.header.stamp.nsecs*1e-9
+
         # calculate correction of linear acceleration for gravity
-        delta_time = time.time() - self.latest_store_stamp
+        delta_time = stamp - self.latest_store_stamp
         _angular_integral = self.pos_integral["angular_pos"] + self._calc_angular_vel()*delta_time
         _pos_integral = {
                 "angular_pos": _angular_integral
@@ -318,16 +320,18 @@ class Integrator:
             self.latest_corr_linear_acc = self.latest_odo["linear_acc"] - g_correction
 
         # calculate position integrals
-        self.update_integral()
+        self.update_integral(stamp)
 
     def _calc_angular_vel(self):
-        return np.mean((
-                    self.prev_odo["angular_vel"],
-                    self.latest_odo["angular_vel"],
-                    #self.latest_twist["angular_vel"]
+        return np.mean(np.vstack(
+                    [
+                        self.prev_odo["angular_vel"],
+                        self.latest_odo["angular_vel"]
+                        #self.latest_twist["angular_vel"]
+                    ]
                 ),0)
 
-    def update_integral(self):
+    def update_integral(self, stamp):
         """Performs most of the integration logic.
 
         Should be called anytime any of the integrator's inputs are updated.
@@ -336,7 +340,7 @@ class Integrator:
 
         # update time
         self.prev_store_stamp = self.latest_store_stamp
-        self.latest_store_stamp = time.time()
+        self.latest_store_stamp = stamp #time.time()
         delta_time = self.latest_store_stamp - self.prev_store_stamp
 
         # update integrals
@@ -356,7 +360,7 @@ class Integrator:
                 self.latest_twist["linear_vel"]
             ),0)*delta_time
         self.pos_integral["angular_pos"] += self._calc_angular_vel()*delta_time
-        self.pos_integral["angular_pos"] = ((self.pos_integral["angular_pos"] + 180) % 360) - 180
+        self.pos_integral["angular_pos"] = ((self.pos_integral["angular_pos"] + 540) % 360) - 180
 
         self.pos_variance["linear_pos"] += np.var((
                 prev_vel_integral_odo["linear_vel"],
@@ -382,7 +386,7 @@ class Integrator:
             The stored integrals (position and variance) since last step.
 
         """
-        self.update_integral()
+        self.update_integral(time.time())
 
         self.prev_access_stamp = self.latest_access_stamp
         self.latest_access_stamp = time.time()
