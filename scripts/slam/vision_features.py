@@ -11,14 +11,16 @@ class VisionFeatures:
     def __init__(self):
         self.camera_sub = rospy.Subscriber("/raspicam_node/image/compressed", CompressedImage, self.on_image, queue_size=1)
         
+        self.prev_image = None
+        self.prev_dots = []
+
         #self.particle_pub = rospy.Publisher("feature_cloud", PointCloud, queue_size=1)
         rospy.init_node("vision_features",anonymous=False)
 
     def start(self):
         rospy.spin()
 
-    def on_image(self, data):
-        
+    def on_image(self, data):        
 
         '''
         bytes_per_pixel = int(data.step/data.width)
@@ -47,6 +49,15 @@ class VisionFeatures:
         #int_data = int.from_bytes(data.data,byteorder='little',signed=False)
         int_data = np.frombuffer(data.data, np.uint8)
         image = cv2.imdecode(int_data, cv2.IMREAD_COLOR)
+        gray_image = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+
+        if self.prev_image = None:
+            self.prev_image = gray_image
+
+        # docs.opencv.org/3.4/d4/dee/tutorial_optical_flow.html
+        next_dots, status, error = cv.calcOpticalFlowPyrLK(prev_image, gray_image, prev_dots, None, **lk_params)
+        self.prev_image = gray_image
+        self.prev_dots = next_dots
 
         #image = PIL_Image.open(BytesIO(data.data))
         cv2.imshow("image", image)

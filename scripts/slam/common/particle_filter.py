@@ -132,6 +132,7 @@ class FilterOptions:
             "num_particles": 2000,
             "resample_interval": .05,
             "resample_noise_count": 3,
+            "reset_weight_on_resample": True,
             "initial_weight": 1
         }
 
@@ -261,12 +262,15 @@ class ParticleFilter:
             self.locked = True
             self.reset_resample_timer()
 
+        weights = self.reweight()
+        assert np.all(weights) > 0, "Weights must be positive."
+
         current_num_particles = np.shape(self.particles)[0]
 
         cumulative_importance = 0
         importance_cdf = np.zeros(current_num_particles, dtype=float)
         for i in range(current_num_particles):
-            cumulative_importance += self.particles[i,self.WEIGHT]
+            cumulative_importance += weights[i]
             importance_cdf[i] = cumulative_importance
 
         # draw requested number of particles from this filter's learned distribution
@@ -276,8 +280,10 @@ class ParticleFilter:
         for i in range(num_from_filter_dist):
             selection = np.random.uniform(0,importance_cdf[-1])
             new_particle_inds[i] = np.searchsorted(importance_cdf, selection)
+            
         self.particles = self.particles[new_particle_inds,:]
-        self.particles[:,self.WEIGHT] = self.options["initial_weight"]
+        if self.options["reset_weight_on_resample"] == True:
+            self.particles[:,self.WEIGHT] = self.options["initial_weight"]
 
         #rospy.loginfo(len(self.particles))
 
@@ -294,6 +300,10 @@ class ParticleFilter:
 
         self.locked = False
         return True
+
+    def reweight(self):
+        # override to adjust weights before resampling
+        return self.particles[:,self.WEIGHT]
 
     def make_cloud(self, points):
         pc = PointCloud()

@@ -6,6 +6,7 @@ import time
 import numpy as np
 import threading
 import random
+from scipy.special import expit as sigmoid
 
 from sensor_msgs.msg import Imu, PointCloud
 from geometry_msgs.msg import Point32
@@ -17,7 +18,7 @@ class Mapper(pf.ParticleFilter):
 
         options.options["initial_linear_dist"] = pf.UniformDistribution2D((-10,10),(-10,10))
         options.options["null_linear_dist"] = pf.UniformDistribution2D((-10,10),(-10,10))
-        options.options["initial_weight"] = self.get_weight()
+        options.options["initial_weight"] = 0
         super().__init__(options)
 
         self.robot_particles = None
@@ -91,7 +92,7 @@ class Mapper(pf.ParticleFilter):
         # actually downweight the selected particles
         indecies = list(re_weights)
         self.particles[indecies,self.WEIGHT] = self.particles[indecies,self.WEIGHT]/2
-        rospy.loginfo(reweighted_count)
+        #rospy.loginfo(reweighted_count)
 
         self.particles = np.vstack([self.particles, new_particles])
 
@@ -99,16 +100,55 @@ class Mapper(pf.ParticleFilter):
         if self.measure_count % 10 == 0:
             self.measure_count = 1
             self.publish()
-            rospy.loginfo("resampling")
+            #rospy.loginfo("resampling")
             return self.resample()
         else:
             self.measure_count += 1
-            rospy.loginfo("done; thread count: " + str(threading.active_count()))
+            #rospy.loginfo("done; thread count: " + str(threading.active_count()))
             return True
 
     def get_weight(self):
         #return 1/(1 + 1e-2*(time.time()-self.start_time))
-        return 1/time.time()
+        return time.time()
+
+    def reweight(self):
+        return self.reweight_linear()
+
+    def reweight_linear(self):
+        new_weight = np.empty(np.shape(self.particles)[0])
+
+        # set zeros to baseline weight
+        baseline_weight = 1/2
+        zeros = self.particles[:,self.WEIGHT] == 0
+        new_weight[zeros] = baseline_weight
+
+        # otherwise calculate weight as linear function of age
+        slope = 1/60
+
+        X = time.time() - self.particles[:,self.WEIGHT]
+        new_weight[np.logical_not(zeros)] = slope*(X[np.logical_not(zeros)] + 1)
+
+        return new_weight/np.max(new_weight)
+
+    def reweight_sigmoid(self):
+        #possible reweight function to call from "reweight"
+        #this uses a sigmoid function
+
+        new_weight = np.empty(np.shape(self.particles)[0])
+
+        # set zeros to baseline weight
+        baseline_weight = .1
+        zeros = self.particles[:,self.WEIGHT] == 0
+        new_weight[zeros] = baseline_weight
+
+        # otherwise calculate weight as sigmoid of timestamp age
+        x_at_90_percent = 30
+        percent_at_intercept = .1
+
+        X = time.time() - self.particles[:,self.WEIGHT]
+        new_weight[np.logical_not(zeros)] = sigmoid((np.log(.1)/x_at_90_percent)*X[np.logical_not(zeros)]) + (percent_at_intercept - .5)
+
+        return new_weight
 
     def update_robot(self, data):
         self.robot_particles = self.decloud(data)
@@ -124,7 +164,12 @@ class Mapper(pf.ParticleFilter):
 
 if __name__ == "__main__":
     
-    options = pf.FilterOptions({"publish_interval": 1e6, "resample_interval": 1e6})
+    options = pf.FilterOptions(
+        {
+            "publish_interval": 1e6,
+            "resample_interval": 1e6,
+            "reset_weight_on_resample": False
+        })
     map = Mapper(options)
     map.start()
 
