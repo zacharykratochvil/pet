@@ -131,6 +131,7 @@ class FilterOptions:
             "initial_angular_dist": lambda x: np.zeros(x),
             "num_particles": 2000,
             "resample_interval": .05,
+            "use_timers": True,
             "resample_noise_count": 3,
             "reset_weight_on_resample": True,
             "initial_weight": 1
@@ -185,6 +186,7 @@ class ParticleFilter:
 
         # initialize particle list
         self.particles = self.init_particles(self.options["num_particles"])
+        self.particle_data = np.repeat([{}], self.options["num_particles"])
         self.locked = False
 
         # initiate resampling process
@@ -237,8 +239,9 @@ class ParticleFilter:
             interrupting = True
 
         # starts new timer
-        self.resample_timer = threading.Timer(interval=interval, function=self.resample)
-        self.resample_timer.start()
+        if self.options["use_timers"] == True:
+            self.resample_timer = threading.Timer(interval=interval, function=self.resample)
+            self.resample_timer.start()
 
         return not interrupting
 
@@ -282,6 +285,7 @@ class ParticleFilter:
             new_particle_inds[i] = np.searchsorted(importance_cdf, selection)
             
         self.particles = self.particles[new_particle_inds,:]
+        self.particle_data = self.particle_data[new_particle_inds]
         if self.options["reset_weight_on_resample"] == True:
             self.particles[:,self.WEIGHT] = self.options["initial_weight"]
 
@@ -292,9 +296,11 @@ class ParticleFilter:
             null_xy = self.options["null_linear_dist"].draw(self.options["resample_noise_count"])
             null_angle = self.options["null_angular_dist"](self.options["resample_noise_count"])
             null_weight = np.ones([self.options["resample_noise_count"], 1])*self.options["initial_weight"]
-            
+            null_data = np.repeat([{}], self.options["resample_noise_count"])
+
             null_particles = np.hstack((null_xy, np.reshape(null_angle, [-1,1]), null_weight))
             self.particles = np.vstack((self.particles, null_particles))
+            self.particle_data = np.hstack((self.particle_data, null_data))
 
         #rospy.loginfo(len(self.particles))
 
