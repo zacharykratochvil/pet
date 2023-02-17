@@ -25,12 +25,15 @@ class Mapper(pf.ParticleFilter):
         super().__init__(options)
 
         self.robot_particles = None
-
-        if "is_main" in self.options and self.options["is_main"] == True:
-            self.map_timer = threading.Timer(self.options["publish_interval"], self.publish)
-            self.map_pub = rospy.Publisher("map", PointCloud, queue_size=2)
-            self.robot_sub = rospy.Subscriber("robot_particles", PointCloud, self.update_robot, queue_size=2)
-            self.measurement_sub = rospy.Subscriber("measured_particles", PointCloud, self.map, queue_size=2)
+    
+        self.prune_timer = threading.Timer(-1,lambda x: x)
+        self.grow_timer = threading.Timer(-1,lambda x: x)
+        self.map_timer = threading.Timer(self.options["publish_interval"], self.publish)
+        
+        self.map_pub = rospy.Publisher("map", PointCloud, queue_size=2)
+        self.robot_sub = rospy.Subscriber("robot_particles", PointCloud, self.update_robot, queue_size=2)
+        self.robot_map_sub = rospy.Subscriber("local_map_particles", PointCloud, self.grow_map, queue_size=2)
+        self.measurement_sub = rospy.Subscriber("measured_particles", PointCloud, self.prune_map, queue_size=2)
         '''else:
             self.robot_particles = np.zeros([1,4])
             #self.map_pub = rospy.Publisher("map"+str(self.map_count), PointCloud, queue_size=2)
@@ -43,14 +46,17 @@ class Mapper(pf.ParticleFilter):
 
         rospy.init_node("mapper", anonymous=False)
 
-        #self.map_timer.start()
+        self.map_timer.start()
         #rospy.loginfo(f"mapper no. {self.map_count} started")
         
         rospy.spin()
 
-    def map(self, data):
+    def prune_map(self, data):
 
+        self.prune_timer.cancel()
         if self.locked == True or type(self.robot_particles) is type(None):
+            self.prune_timer = threading.Timer(.001, self.prune_map, [data])
+            self.prune_timer.start()
             return False
         else:
             self.locked = True
@@ -106,23 +112,37 @@ class Mapper(pf.ParticleFilter):
         #self.particles = np.vstack([self.particles, new_particles])
         #self.particle_data = np.hstack([self.particle_data, [{}]*len(new_particles)])
 
+        self.publish()
         self.locked = False
-        if self.measure_count % 5 == 0:
+        if self.measure_count % 3 == 0:
             self.measure_count = 1
-            self.publish()
-            #rospy.loginfo("resampling")
-            return self.resample()
+            resampled = self.resample()
+            return resampled
         else:
             self.measure_count += 1
             #rospy.loginfo("done; thread count: " + str(threading.active_count()))
             return True
 
-    def resample(self):
-        if "is_main" in self.options and self.options["is_main"] == True:
-            return super().resample()
-        else:
+    def grow_map(self, data):
+        
+        self.grow_timer.cancel()
+        if self.locked == True or type(self.robot_particles) == type(None):
+            self.grow_timer = threading.Timer(.001, self.grow_map, [data])
+            self.grow_timer.start()
             return False
+        else:
+            self.locked = True
 
+        new_particles = self.decloud(data)
+        new_particles[:, self.WEIGHT] = new_particles[:, self.WEIGHT]*self.get_weight()
+        self.particles = np.vstack([self.particles, new_particles])
+        self.particle_data = np.array([{}]*len(self.particles))
+
+        self.publish()
+        self.locked = False
+        resampled = self.resample()
+        
+        return resampled
 
     def get_weight(self):
         #return 1/(1 + 1e-2*(time.time()-self.start_time))
@@ -175,7 +195,7 @@ class Mapper(pf.ParticleFilter):
         # restart timer
         self.map_timer.cancel()
         self.map_timer = threading.Timer(self.options["publish_interval"], self.publish)
-        #self.map_timer.start()
+        self.map_timer.start()
         
         self.map_pub.publish(self.make_cloud(self.particles))
 
@@ -187,7 +207,7 @@ if __name__ == "__main__":
             "publish_interval": 1e6,
             "resample_interval": 1e6,
             "reset_weight_on_resample": False,
-            "is_main": True
+            "resample_noise_count": 10
         })
     map = Mapper(options)
     map.start()

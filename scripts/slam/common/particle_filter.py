@@ -186,7 +186,7 @@ class ParticleFilter:
 
         # initialize particle list
         self.particles = self.init_particles(self.options["num_particles"])
-        self.particle_data = np.repeat([{}], self.options["num_particles"])
+        self.particle_data = np.array([{} for i in range(self.options["num_particles"])])
         self.locked = False
 
         # initiate resampling process
@@ -296,7 +296,7 @@ class ParticleFilter:
             null_xy = self.options["null_linear_dist"].draw(self.options["resample_noise_count"])
             null_angle = self.options["null_angular_dist"](self.options["resample_noise_count"])
             null_weight = np.ones([self.options["resample_noise_count"], 1])*self.options["initial_weight"]
-            null_data = np.repeat([{}], self.options["resample_noise_count"])
+            null_data = np.array([{} for i in range(self.options["resample_noise_count"])])
 
             null_particles = np.hstack((null_xy, np.reshape(null_angle, [-1,1]), null_weight))
             self.particles = np.vstack((self.particles, null_particles))

@@ -19,6 +19,8 @@ import time
 import random
 import numpy as np
 import threading
+import sklearn.neighbors as skln
+from scipy.special import expit as sigmoid
 
 #from mapper import Mapper
 
@@ -49,15 +51,17 @@ class RobotLocalizer(pf.ParticleFilter):
             The new robot localization filter.
 
         """
-        options.options["initial_linear_dist"] = pf.ZeroDistribution2D()
+        options.options["initial_linear_dist"] = pf.UniformDistribution2D((-.1,.1),(-.1,.1))
         super().__init__(options)
 
-        self.inner_options = pf.FilterOptions({"initial_linear_dist":pf.ZeroDistribution2D(),
-                                          "resample_interval":3600,
-                                          "use_timers": False,
-                                          "num_particles":200})
+        self.inner_options = pf.FilterOptions({"initial_linear_dist":pf.UniformDistribution2D((-10,10),(-10,10)),
+                                                  "resample_interval":1e6,
+                                                  "use_timers": False,
+                                                  "num_particles":200,
+                                                  })
         for i in range(len(self.particles)):
             self.particle_data[i]["map"] = pf.ParticleFilter(self.inner_options)
+            #rospy.loginfo(self.particle_data[i]["map"].particles[:,0:2])
         
         self.integrator = Integrator()
         self.accumulator = Accumulator()
@@ -71,10 +75,11 @@ class RobotLocalizer(pf.ParticleFilter):
         self.drive_sub = rospy.Subscriber("drive_twist", TwistDuration, self.integrator.on_twist, queue_size=10)
         self.witmotion_sub = rospy.Subscriber("imu", Imu, self.integrator.on_odo, queue_size=1000)
         self.ultra_sub = rospy.Subscriber("ultrasonic_distance", SensorDistance, self.accumulator.on_ultra, queue_size=1)
-        self.map_sub = rospy.Publisher("map", PointCloud, self.map, queue_size=1)
+        self.map_sub = rospy.Subscriber("map", PointCloud, self.map, queue_size=1)
 
         self.measurement_pub = rospy.Publisher("measured_particles", PointCloud, queue_size=1)
         self.particle_pub = rospy.Publisher("robot_particles", PointCloud, queue_size=1)
+        self.local_particle_pub = rospy.Publisher("local_map_particles", PointCloud, queue_size=1)
 
     def start(self):
         """Connects to the next available port.
@@ -92,16 +97,19 @@ class RobotLocalizer(pf.ParticleFilter):
         self.weight_timer.start()
         self.measure_timer.start()
         self.publish_timer.start()
+        self.publish_particles()
+        rospy.loginfo(self.particle_data[0]["map"].particles[:,0:2])
+        rospy.loginfo(self.particle_data[1]["map"].particles[:,0:2])
 
         rospy.spin()
 
     def resample(self):
         if super().resample():
-            for i in range(len(self.particles)-self.inner_options.options["resample_noise_count"], len(self.particles)):
+            for i in range(len(self.particles)-self.options["resample_noise_count"], len(self.particles)):
                 self.particle_data[i]["map"] = pf.ParticleFilter(self.inner_options)
 
     def map(self, data):
-        self.map = self.decloud(data)
+        self.latest_map = self.decloud(data)
         
     def move(self):
         """Connects to the next available port.
@@ -115,14 +123,17 @@ class RobotLocalizer(pf.ParticleFilter):
         """
         # restart timer
         self.move_timer.cancel()
-        self.move_timer = threading.Timer(self.options["move_interval"], self.move)
-        self.move_timer.start()
 
         # only proceed if can obtain lock
         if self.locked == True:
+            self.move_timer = threading.Timer(.001, self.move)
+            self.move_timer.start()
             return False
         else:
             self.locked = True
+            self.move_timer = threading.Timer(self.options["move_interval"], self.move)
+            self.move_timer.start()
+
 
         delta_pos, var = self.integrator.step()
 
@@ -156,21 +167,27 @@ class RobotLocalizer(pf.ParticleFilter):
         """
 
         # restart timer
-        self.measure_timer.cancel()
-        self.measure_timer = threading.Timer(self.options["measure_interval"], self.measure)
-        self.measure_timer.start()
+        self.measure_timer.cancel()        
 
         # only proceed if can obtain lock
         if self.locked == True:
+            self.measure_timer = threading.Timer(.001, self.measure)
+            self.measure_timer.start()
             return False
         else:
             self.locked = True
+            self.measure_timer = threading.Timer(self.options["measure_interval"], self.measure)
+            self.measure_timer.start()
 
-        # generate list of points, convert cm to m
+        # generate short list of points, convert cm to m and scatter in perpendicular direction
         distances = np.array(self.accumulator.get_data())/100
-        #rospy.loginfo(distances)
-        scatter = [np.random.normal(0,np.abs(np.tan(15/180*np.pi)*dist)) for dist in distances]
-        xy = np.hstack([np.reshape(distances,[-1,1]), np.reshape(scatter,[-1,1])])
+        if len(distances) == 0:
+            self.locked = False
+            return True
+
+        selected_distances = np.random.choice(distances,20)
+        scatter = [np.random.normal(0,np.abs(np.tan(15/180*np.pi)*dist)) for dist in selected_distances]
+        xy = np.hstack([np.reshape(scatter,[-1,1]),np.reshape(selected_distances,[-1,1])])
         measured_particles = np.hstack([xy, np.zeros([np.shape(xy)[0], 2])])
 
         # publish points
@@ -178,7 +195,7 @@ class RobotLocalizer(pf.ParticleFilter):
         self.measurement_pub.publish(pc)
 
         # update a random subset of local maps with a random subset of measured particles
-        for i in random.sample(range(len(self.particles)), int(np.ceil(len(self.particles)/5))):
+        for i in np.random.randint(low=0, high=len(self.particles), size=int(np.ceil(len(self.particles)/5))):
             
             num_measureds_to_sample = int(np.ceil(len(measured_particles)/3))
             added_particles = np.empty([num_measureds_to_sample, 4])   
@@ -190,7 +207,7 @@ class RobotLocalizer(pf.ParticleFilter):
 
             all_particles = np.vstack([self.particle_data[i]["map"].particles, added_particles])
             self.particle_data[i]["map"].particles = all_particles
-            self.particle_data[i]["map"].particle_data = np.array([{}]*len(self.particle_data[i]["map"].particles))
+            self.particle_data[i]["map"].particle_data = np.array([{} for i in range(len(self.particle_data[i]["map"].particles))])
             self.particle_data[i]["map"].resample()
         
         self.locked = False
@@ -209,13 +226,47 @@ class RobotLocalizer(pf.ParticleFilter):
         """
         # restart timer
         self.weight_timer.cancel()
-        self.weight_timer = threading.Timer(self.options["weight_interval"], self.weight)
-        self.weight_timer.start()
+
+        # only proceed if can obtain lock
+        if self.locked == True or type(self.latest_map) == type(None):
+            self.weight_timer = threading.Timer(.001, self.weight)
+            self.weight_timer.start()
+            return False
+        else:
+            self.locked = True
+            self.weight_timer = threading.Timer(self.options["weight_interval"], self.weight)
+            self.weight_timer.start()
 
         # compare to map, score
-        for i in range(self.options["num_particles"]):
-            pass
+        num_neighbors = 10
+        nn_tree = skln.NearestNeighbors(n_neighbors = num_neighbors, algorithm = "kd_tree",
+                                            leaf_size = 10, n_jobs = 4)
+        nn_tree.fit(self.latest_map[:,0:2])
 
+        local_particles = []
+        for i in range(self.options["num_particles"]):
+            neighbors = nn_tree.kneighbors(self.particle_data[i]["map"].particles[:,0:2], n_neighbors=num_neighbors, return_distance = True)
+            #rospy.loginfo(self.particle_data[i]["map"].particles[:,0:2])
+            distances = neighbors[0].flatten()
+            distance = np.mean(distances)
+            weight = 1 - sigmoid(distance) #1 - np.tanh(distance)
+            self.particles[i,self.WEIGHT] = max(0, weight)
+
+            new_local_particles = np.empty([len(self.particle_data[i]["map"].particles), 4])
+            new_local_particles[:,0:2] = self.particle_data[i]["map"].particles[:,0:2]
+            new_local_particles[:,self.ANGLE] = 0
+            new_local_particles[:,self.WEIGHT] = weight
+            local_particles.append(new_local_particles)
+
+        local_particles = np.vstack(local_particles)
+        pc = self.make_cloud(local_particles)
+        self.local_particle_pub.publish(pc)
+
+        self.publish_particles()
+        self.locked = False
+
+        self.resample()
+        return True
 
     def publish_particles(self):
         self.publish_timer.cancel()
@@ -472,13 +523,13 @@ class Integrator:
 
 if __name__ == "__main__":
     options = {
-            "resample_interval": 1,
+            "resample_interval": 1e6,
             "move_interval": .25,
             "measure_interval": .75,
             "weight_interval": 5,
-            "publish_interval": 1,
+            "publish_interval": 1e6,
             "resample_noise_count": 0,
-            "num_particles": 200
+            "num_particles": 50
         }
     options = pf.FilterOptions(options)
     robot_filter = RobotLocalizer(options)
