@@ -4,10 +4,9 @@
 
 	<node name="enable" pkg="pet" type="enable.py"/>
 	<node name="legs" pkg="pet" type="legs.py"/>
-	<node name="mapper" pkg="pet" type="mapper.py"/>
-	<node name="robot_localizer" pkg="pet" type="robot_localizer.py"/>
-	<!--<node name="slam_test" pkg="pet" type="robot_localizer.py" />-->
-	<!--<node name="vision_features" pkg="pet" type="vision_features.py"/>-->
+	<node name="mapper" pkg="pet" type="mapper.py" launch-prefix="nice -n -15"/>
+	<node name="robot_localizer" pkg="pet" type="robot_localizer.py" launch-prefix="nice -n -15"/>
+	<node name="optical_flow" pkg="pet" type="vision_for_slam.py"/>
 
 	<param name="/raspicam_node/enable_raw" type="boolean" value="True" />
 	

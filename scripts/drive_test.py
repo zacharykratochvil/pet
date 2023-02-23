@@ -24,38 +24,49 @@ class Test:
         message.velocity.angular.x = 0
         message.velocity.angular.y = 0
         message.velocity.angular.z = 0
-        message.duration = 2
+        message.duration = 1
         self.drive_pub.publish(message)
 
-    def m1a30(self):
+    def m1a45(self):
         message = TwistDuration()
         message.velocity.linear.x = 0
         message.velocity.linear.y = 1
         message.velocity.linear.z = 0
         message.velocity.angular.x = 0
         message.velocity.angular.y = 0
-        message.velocity.angular.z = 30
-        message.duration = 1
+        message.velocity.angular.z = 45
+        message.duration = 2
         self.drive_pub.publish(message)
+
+    def m22an0(self):
+        message = TwistDuration()
+        message.velocity.linear.x = 0
+        message.velocity.linear.y = 2
+        message.velocity.linear.z = 0
+        message.velocity.angular.x = 0
+        message.velocity.angular.y = 0
+        message.velocity.angular.z = 0
+        message.duration = 2
+        self.drive_pub.publish(message)        
 
     def m0an90(self):
         message = TwistDuration()
         message.velocity.linear.x = 0
-        message.velocity.linear.y = 0
+        message.velocity.linear.y = 2
         message.velocity.linear.z = 0
         message.velocity.angular.x = 0
         message.velocity.angular.y = 0
-        message.velocity.angular.z = -90
-        message.duration = 1
-        self.drive_pub.publish(message)        
+        message.velocity.angular.z = 0
+        message.duration = 2
+        self.drive_pub.publish(message)
 
 if __name__ == "__main__":
     test = Test()
     t = threading.Timer(2, test.m2a0)
     t.start()
 
-    #t1 = threading.Timer(15, test.m1a30)
-    #t1.start()
+    t1 = threading.Timer(4, test.m1a45)
+    t1.start()
 
-    #t2 = threading.Timer(30, test.m0an90)
-    #t2.start()
+    t2 = threading.Timer(6, test.m22an0)
+    t2.start()

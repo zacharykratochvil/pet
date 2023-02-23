@@ -53,9 +53,9 @@ class Mapper(pf.ParticleFilter):
 
     def prune_map(self, data):
 
-        self.prune_timer.cancel()
+        #self.prune_timer.cancel()
         if self.locked == True or type(self.robot_particles) is type(None):
-            self.prune_timer = threading.Timer(.001, self.prune_map, [data])
+            self.prune_timer = threading.Timer(.1, self.prune_map, [data])
             self.prune_timer.start()
             return False
         else:
@@ -87,7 +87,7 @@ class Mapper(pf.ParticleFilter):
             delta_angle = 30 #degrees
 
             # compute stats of existing particles and select ones on path
-            particle_inds_to_examine = random.sample(range(len(self.particles)), 1000)
+            particle_inds_to_examine = random.sample(range(len(self.particles)), 50)
             reweighted_count = 0
             delta_Y = self.particles[particle_inds_to_examine,self.Y]-ref_particle[self.Y]
             delta_X = self.particles[particle_inds_to_examine,self.X]-ref_particle[self.X]
@@ -114,7 +114,7 @@ class Mapper(pf.ParticleFilter):
 
         self.publish()
         self.locked = False
-        if self.measure_count % 3 == 0:
+        if self.measure_count % 5 == 0:
             self.measure_count = 1
             resampled = self.resample()
             return resampled
@@ -146,11 +146,11 @@ class Mapper(pf.ParticleFilter):
 
     def get_weight(self):
         #return 1/(1 + 1e-2*(time.time()-self.start_time))
-        return time.time()
+        return 1 #time.time()
 
 
     def reweight(self):
-        return self.reweight_linear()
+        return np.ones(np.shape(self.particles)[0]) #self.reweight_linear()
 
     def reweight_linear(self):
         new_weight = np.empty(np.shape(self.particles)[0])
@@ -207,7 +207,8 @@ if __name__ == "__main__":
             "publish_interval": 1e6,
             "resample_interval": 1e6,
             "reset_weight_on_resample": False,
-            "resample_noise_count": 10
+            "num_particles": 800,
+            "resample_noise_count": 5
         })
     map = Mapper(options)
     map.start()

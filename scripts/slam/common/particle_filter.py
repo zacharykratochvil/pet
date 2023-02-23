@@ -266,7 +266,7 @@ class ParticleFilter:
             self.reset_resample_timer()
 
         weights = self.reweight()
-        assert np.all(weights) > 0, "Weights must be positive."
+        assert np.sum(weights) > 0, "Weights must be positive."
 
         current_num_particles = np.shape(self.particles)[0]
 

@@ -16,17 +16,20 @@ import common.particle_filter as pf
 import rospy
 import cv2
 import time
+import copy
 import random
 import numpy as np
 import threading
 import sklearn.neighbors as skln
+from common.accumulator import Accumulator, UltraSonicAccumulator
 from scipy.special import expit as sigmoid
 
 #from mapper import Mapper
 
 from freenove_ros.msg import TwistDuration, SensorDistance
 from sensor_msgs.msg import Imu, PointCloud
-from geometry_msgs.msg import Point32
+from geometry_msgs.msg import Point32, Twist
+from std_msgs.msg import Float32
 
 class RobotLocalizer(pf.ParticleFilter):
     """Summary of class here.
@@ -57,14 +60,16 @@ class RobotLocalizer(pf.ParticleFilter):
         self.inner_options = pf.FilterOptions({"initial_linear_dist":pf.UniformDistribution2D((-10,10),(-10,10)),
                                                   "resample_interval":1e6,
                                                   "use_timers": False,
-                                                  "num_particles":200,
+                                                  "num_particles":50,
+                                                  "resample_noise_count":0
                                                   })
         for i in range(len(self.particles)):
             self.particle_data[i]["map"] = pf.ParticleFilter(self.inner_options)
             #rospy.loginfo(self.particle_data[i]["map"].particles[:,0:2])
         
         self.integrator = Integrator()
-        self.accumulator = Accumulator()
+        self.ultra_accumulator = UltraSonicAccumulator()
+        #self.vision_accumulator = Accumulator()
         self.latest_map = None
 
         self.move_timer = threading.Timer(self.options["move_interval"], self.move)
@@ -74,7 +79,8 @@ class RobotLocalizer(pf.ParticleFilter):
 
         self.drive_sub = rospy.Subscriber("drive_twist", TwistDuration, self.integrator.on_twist, queue_size=10)
         self.witmotion_sub = rospy.Subscriber("imu", Imu, self.integrator.on_odo, queue_size=1000)
-        self.ultra_sub = rospy.Subscriber("ultrasonic_distance", SensorDistance, self.accumulator.on_ultra, queue_size=1)
+        self.ultra_sub = rospy.Subscriber("ultrasonic_distance", SensorDistance, self.ultra_accumulator.on_ultra, queue_size=1)
+        self.optical_sub = rospy.Subscriber("optical_velocity", Twist, self.integrator.on_vision, queue_size=1)
         self.map_sub = rospy.Subscriber("map", PointCloud, self.map, queue_size=1)
 
         self.measurement_pub = rospy.Publisher("measured_particles", PointCloud, queue_size=1)
@@ -136,9 +142,12 @@ class RobotLocalizer(pf.ParticleFilter):
 
 
         delta_pos, var = self.integrator.step()
+        #rospy.loginfo(f"pos: {delta_pos}; var: {var}")
 
         # produce a list of random errors to apply to particles
-        _args_list = (delta_pos["linear_pos"][0], delta_pos["linear_pos"][1], var["linear_pos"][0], var["linear_pos"][1])
+        variance_multiplier = 1.5
+        variance_offset = .05
+        _args_list = (delta_pos["linear_pos"][0], delta_pos["linear_pos"][1], variance_multiplier*var["linear_pos"][0] + variance_offset, variance_multiplier*var["linear_pos"][1] + variance_offset)
         lin_error_dist = pf.GaussianDistribution2D(*_args_list)
         lin_errors = lin_error_dist.draw(self.options["num_particles"])
         lin_errors = np.hstack([lin_errors, np.zeros([self.options["num_particles"],1])])
@@ -151,6 +160,7 @@ class RobotLocalizer(pf.ParticleFilter):
         self.particles += particle_deltas
         self.particles[:,self.ANGLE] = ((self.particles[:,self.ANGLE] + 180) % 360) - 180
 
+        self.publish_particles()
         self.locked = False
         return True
 
@@ -180,12 +190,14 @@ class RobotLocalizer(pf.ParticleFilter):
             self.measure_timer.start()
 
         # generate short list of points, convert cm to m and scatter in perpendicular direction
-        distances = np.array(self.accumulator.get_data())/100
+        distances = np.array(self.ultra_accumulator.get_data())/100
         if len(distances) == 0:
             self.locked = False
             return True
 
-        selected_distances = np.random.choice(distances,20)
+        self.integrator.update_distances(distances)
+
+        selected_distances = np.random.choice(distances,max(len(distances),10))
         scatter = [np.random.normal(0,np.abs(np.tan(15/180*np.pi)*dist)) for dist in selected_distances]
         xy = np.hstack([np.reshape(scatter,[-1,1]),np.reshape(selected_distances,[-1,1])])
         measured_particles = np.hstack([xy, np.zeros([np.shape(xy)[0], 2])])
@@ -197,7 +209,7 @@ class RobotLocalizer(pf.ParticleFilter):
         # update a random subset of local maps with a random subset of measured particles
         for i in np.random.randint(low=0, high=len(self.particles), size=int(np.ceil(len(self.particles)/5))):
             
-            num_measureds_to_sample = int(np.ceil(len(measured_particles)/3))
+            num_measureds_to_sample = len(measured_particles) #int(np.ceil(len(measured_particles)/3))
             added_particles = np.empty([num_measureds_to_sample, 4])   
             added_i = 0
 
@@ -228,7 +240,10 @@ class RobotLocalizer(pf.ParticleFilter):
         self.weight_timer.cancel()
 
         # only proceed if can obtain lock
-        if self.locked == True or type(self.latest_map) == type(None):
+        if type(self.latest_map) == type(None):
+            self.publish_particles()
+            return False
+        elif self.locked == True:
             self.weight_timer = threading.Timer(.001, self.weight)
             self.weight_timer.start()
             return False
@@ -237,8 +252,10 @@ class RobotLocalizer(pf.ParticleFilter):
             self.weight_timer = threading.Timer(self.options["weight_interval"], self.weight)
             self.weight_timer.start()
 
+        rospy.loginfo("attempting to weight")
+
         # compare to map, score
-        num_neighbors = 10
+        num_neighbors = 20
         nn_tree = skln.NearestNeighbors(n_neighbors = num_neighbors, algorithm = "kd_tree",
                                             leaf_size = 10, n_jobs = 4)
         nn_tree.fit(self.latest_map[:,0:2])
@@ -248,8 +265,9 @@ class RobotLocalizer(pf.ParticleFilter):
             neighbors = nn_tree.kneighbors(self.particle_data[i]["map"].particles[:,0:2], n_neighbors=num_neighbors, return_distance = True)
             #rospy.loginfo(self.particle_data[i]["map"].particles[:,0:2])
             distances = neighbors[0].flatten()
-            distance = np.mean(distances)
-            weight = 1 - sigmoid(distance) #1 - np.tanh(distance)
+            #distances.sort()
+            distance = np.mean(distances)#[:int(len(distances)*.8)])
+            weight = 1 - np.tanh(distance)
             self.particles[i,self.WEIGHT] = max(0, weight)
 
             new_local_particles = np.empty([len(self.particle_data[i]["map"].particles), 4])
@@ -275,20 +293,6 @@ class RobotLocalizer(pf.ParticleFilter):
 
         pc = self.make_cloud(self.particles)
         self.particle_pub.publish(pc)
-
-
-class Accumulator:
-    def __init__(self):
-        self._ultrasonic_data = []
-
-    def on_ultra(self, data):
-        if data.cm != -1:
-            self._ultrasonic_data.append(data.cm)
-
-    def get_data(self):
-        _temp = self._ultrasonic_data
-        self._ultrasonic_data = []
-        return _temp
 
 
 class Integrator:
@@ -326,11 +330,14 @@ class Integrator:
 
         # stores last measurements
         self.latest_twist = {"linear_vel":(0.0,0.0,0.0),"angular_vel":(0.0,0.0,0.0)}
+        self.latest_vision = {"linear_vel":(0.0,0.0,0.0),"angular_vel":(0.0,0.0,0.0)}
         self.latest_odo = {"linear_acc":(0.0,0.0,0.0),"angular_vel":(0.0,0.0,0.0)}
         self.latest_corr_linear_acc = (0.0,0.0,0.0)
         self.latest_store_stamp = time.time()
         self.latest_access_stamp = time.time()
+        self.latest_distances = None
 
+        self.prev_vision = {"linear_vel":(0.0,0.0,0.0),"angular_vel":(0.0,0.0,0.0)}
         self.prev_odo = {"linear_acc":(0.0,0.0,0.0),"angular_vel":(0.0,0.0,0.0)}
         self.prev_corr_linear_acc = (0.0,0.0,0.0)
         self.prev_store_stamp = time.time()
@@ -347,9 +354,22 @@ class Integrator:
         # twist callback        
         self.timer = threading.Timer(0, self._clear_twist)
 
+    def update_distances(self, distances):
+        self.latest_distances = distances
+
     def _clear_twist(self):
         self.update_integral(time.time())
         self.latest_twist = {"linear_vel":(0.0,0.0,0.0),"angular_vel":(0.0,0.0,0.0)}
+
+    #average with heavier weight to lower value
+    def _smooth(self, array1, array2, weight_ratio=5):
+        min_index = np.argmin([array1, array2], axis = 0)
+
+        weights = np.ones([2,3])
+        for i in range(len(min_index)):
+            weights[min_index[i],i] = weight_ratio
+
+        return np.average([array1, array2], axis = 0)
 
     def on_twist(self, msg):
         """Processes and integrates Twist drive request messages.
@@ -379,6 +399,22 @@ class Integrator:
                 msg.velocity.angular.z
             )
 
+    def on_vision(self, msg):
+        if type(self.latest_distances) == type(None):
+            return
+
+        self.prev_vision = copy.deepcopy(self.latest_vision)
+
+        x_vel = msg.linear.x - np.pi/180*self._calc_angular_vel()[2]*np.mean(self.latest_distances)
+        self.latest_vision["linear_vel"] = [x_vel, msg.linear.y, msg.linear.z]
+        for i in range(3):
+            if np.squeeze(np.abs(self.latest_vision["linear_vel"][i])) > self.VELOCITY_MAX:
+                self.latest_vision["linear_vel"][i] = np.sign(self.latest_vision["linear_vel"])*self.VELOCITY_MAX[i]
+        
+        self.latest_vision["linear_vel"] = self._smooth(self.prev_vision["linear_vel"], self.latest_vision["linear_vel"])
+
+        self.update_integral(time.time())
+
     def on_odo(self, msg):
         """Processes and integrates Imu messages.
 
@@ -386,8 +422,9 @@ class Integrator:
             msg: the Imu message received by the subscriber to imu
 
         """
+
         # store previous and update latest
-        self.prev_odo = self.latest_odo
+        self.prev_odo = copy.deepcopy(self.latest_odo)
         self.latest_odo["linear_acc"] = (
                 msg.linear_acceleration.x,
                 msg.linear_acceleration.y,
@@ -396,7 +433,7 @@ class Integrator:
         self.latest_odo["angular_vel"] = (
                 msg.angular_velocity.x*180/np.pi,
                 msg.angular_velocity.y*180/np.pi,
-                msg.angular_velocity.z*180/np.pi
+                -msg.angular_velocity.z*180/np.pi
             )
 
         stamp = msg.header.stamp.secs + msg.header.stamp.nsecs*1e-9
@@ -410,10 +447,10 @@ class Integrator:
 
         g = -9.81 # m/s**2
         if np.sum(np.abs(self.latest_odo["angular_vel"])) == 0:
-            x_percent_g = max(-1.0,min(1.0,self.latest_odo["linear_acc"][1]/g))
-            y_percent_g = max(-1.0,min(1.0,self.latest_odo["linear_acc"][0]/g))
-            x = np.arcsin(x_percent_g)
-            y = -np.arcsin(y_percent_g)
+            x_percent_g = max(-1.0,min(1.0,self.latest_odo["linear_acc"][0]/g))
+            y_percent_g = max(-1.0,min(1.0,self.latest_odo["linear_acc"][1]/g))
+            x = np.arcsin(y_percent_g)
+            y = -np.arcsin(x_percent_g)
 
             self.pos_integral["angular_pos"] = (x, y, self.pos_integral["angular_pos"][2])
             _pos_integral["angular_pos"] = self.pos_integral["angular_pos"]
@@ -423,12 +460,14 @@ class Integrator:
         g_z = -np.sqrt(max(0, g**2 - g_x**2 - g_y**2))
         g_correction = np.asarray((g_x, g_y, g_z))
 
-        self.prev_corr_linear_acc = self.latest_corr_linear_acc
+        self.prev_corr_linear_acc = copy.deepcopy(self.latest_corr_linear_acc)
         if np.sum(np.abs(self.latest_odo["angular_vel"])) == 0:
             self.latest_corr_linear_acc = (0.0, 0.0, 0.0)
             self.vel_integral_odo = {"linear_vel":(0.0, 0.0, 0.0)}
         else:
             self.latest_corr_linear_acc = self.latest_odo["linear_acc"] - g_correction
+
+        #self.latest_odo["linear_vel"] = self._smooth()
 
         # calculate position integrals
         self.update_integral(stamp)
@@ -455,29 +494,49 @@ class Integrator:
         delta_time = self.latest_store_stamp - self.prev_store_stamp
 
         # update integrals
-        prev_vel_integral_odo = self.vel_integral_odo
+        decay_constant = .95
+        prev_vel_integral_odo = copy.deepcopy(self.vel_integral_odo)
         self.vel_integral_odo["linear_vel"] += np.mean((
                 self.prev_corr_linear_acc,
                 self.latest_corr_linear_acc
-            ),0)*delta_time
+            ),0)*delta_time*decay_constant
+        #self.vel_integral_odo["linear_vel"] = np.mean((self.vel_integral_odo["linear_vel"],
+        #        self.latest_twist["linear_vel"]),0)
         for i in range(3):
             _vel_pointer = self.vel_integral_odo["linear_vel"]
             if np.abs(_vel_pointer[i]) > self.VELOCITY_MAX:
                 _vel_pointer[i] = np.sign(_vel_pointer[i])*self.VELOCITY_MAX
 
-        self.pos_integral["linear_pos"] += np.mean((
-                prev_vel_integral_odo["linear_vel"],
-                self.vel_integral_odo["linear_vel"],
-                self.latest_twist["linear_vel"]
-            ),0)*delta_time
+        
+        #rospy.loginfo("prev_integral: " + str(prev_vel_integral_odo["linear_vel"]))
+        #rospy.loginfo(self.vel_integral_odo["linear_vel"])
+        #rospy.loginfo(self.latest_twist["linear_vel"])
+
+        self.pos_integral["linear_pos"] += np.nanmean((
+                #prev_vel_integral_odo["linear_vel"],
+                #self.vel_integral_odo["linear_vel"],
+                #self.latest_vision["linear_vel"],
+                #self.latest_vision["linear_vel"],
+                self.prev_vision["linear_vel"],
+                self.latest_vision["linear_vel"]
+                #self.latest_twist["linear_vel"]
+                #self.latest_twist["linear_vel"]
+            ), axis = 0)*delta_time
+
+        #rospy.loginfo("integral: " + str(self.pos_integral["linear_pos"]))
         self.pos_integral["angular_pos"] += self._calc_angular_vel()*delta_time
         self.pos_integral["angular_pos"] = ((self.pos_integral["angular_pos"] + 540) % 360) - 180
 
-        self.pos_variance["linear_pos"] += np.var((
-                prev_vel_integral_odo["linear_vel"],
-                self.vel_integral_odo["linear_vel"],
-                self.latest_twist["linear_vel"]
-            ),0,ddof=1)*delta_time**2
+        #rospy.logwarn(self.pos_integral["angular_pos"])
+
+        #self.pos_variance["linear_pos"] += np.nanvar((
+        #        prev_vel_integral_odo["linear_vel"],
+        #        self.vel_integral_odo["linear_vel"],
+        #        self.latest_vision["linear_vel"]
+                #self.latest_twist["linear_vel"]
+                #self.latest_twist["linear_vel"]
+        #    ),0,ddof=1)*delta_time**2
+        self.pos_variance["linear_pos"] += np.array((0.0,0.0,0.0))*delta_time**2
         self.pos_variance["angular_pos"] += np.array((.05,.05,.05))*delta_time**2
 
         '''np.var((
@@ -485,6 +544,8 @@ class Integrator:
             self.latest_odo["angular_vel"],
             self.latest_twist["angular_vel"]
         ),0,ddof=1)*delta_time**2'''
+        
+        #self.latest_vision["linear_vel"] = (0.0,0.0,0.0)
 
     def step(self):
         """Step the integrator
@@ -502,10 +563,10 @@ class Integrator:
         self.prev_access_stamp = self.latest_access_stamp
         self.latest_access_stamp = time.time()
         
-        _last_access_pos_integral = self.last_access_pos_integral.copy()
+        _last_access_pos_integral = copy.deepcopy(self.last_access_pos_integral)
 #        _last_access_pos_integral["linear_pos"] = self.last_access_pos_integral["linear_pos"]
 #        _last_access_pos_integral["angular_pos"] = self.last_access_pos_integral["angular_pos"]
-        self.last_access_pos_integral = self.pos_integral.copy()
+        self.last_access_pos_integral = copy.deepcopy(self.pos_integral)
 #        self.last_access_pos_integral["linear_pos"] = self.pos_integral["linear_pos"]
 #        self.last_access_pos_integral["angular_pos"] = self.pos_integral["angular_pos"]
 
@@ -524,12 +585,12 @@ class Integrator:
 if __name__ == "__main__":
     options = {
             "resample_interval": 1e6,
-            "move_interval": .25,
-            "measure_interval": .75,
-            "weight_interval": 5,
+            "move_interval": .5,
+            "measure_interval": 2,
+            "weight_interval": 4,
             "publish_interval": 1e6,
             "resample_noise_count": 0,
-            "num_particles": 50
+            "num_particles": 30
         }
     options = pf.FilterOptions(options)
     robot_filter = RobotLocalizer(options)
