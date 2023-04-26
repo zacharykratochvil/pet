@@ -11,9 +11,13 @@ Copyright Zachary Kratochvil, 2022. All rights reserved.
 """
 import numpy as np
 import threading
+import traceback
+import inspect
 import time
 import rospy
 import gc
+import copy
+from functools import wraps
 
 from sensor_msgs.msg import PointCloud, ChannelFloat32
 from geometry_msgs.msg import Point32
@@ -130,7 +134,7 @@ class FilterOptions:
             "initial_linear_dist": ZeroDistribution2D(),
             "initial_angular_dist": lambda x: np.zeros(x),
             "num_particles": 2000,
-            "resample_interval": .05,
+            "resample_interval": 1e6,
             "use_timers": True,
             "resample_noise_count": 3,
             "reset_weight_on_resample": True,
@@ -191,8 +195,11 @@ class ParticleFilter:
 
         # initiate resampling process
         self.resampling = False
-        self.resample_timer = None
-        self.reset_resample_timer()
+        if self.options["use_timers"] == True:
+            self.resample_timer = threading.Timer(self.options["resample_interval"], self.resample)
+            self.resample_timer.start()
+
+        #self.resize_timer = threading.Timer(0, self.resize)
 
     def init_particles(self, n):
         """Returns particles in null distribution
@@ -220,6 +227,7 @@ class ParticleFilter:
             particles_weight = np.ones(n)*self.options["initial_weight"]
             return np.hstack((particles_xy, particles_angle[:,np.newaxis], particles_weight[:,np.newaxis]))
 
+    '''
     def reset_resample_timer(self, interval=None):
         """Resets the resample timer
 
@@ -245,7 +253,63 @@ class ParticleFilter:
 
         return not interrupting
 
-    def resample(self):
+
+    def decorate(inner_fn, *args, **kwargs):
+        
+        calling_fn = inspect.stack()[1][3]
+        
+        def decorator(fn):
+            def wrapper(*wrapper_args, **wrapper_kwargs):
+                return inner_fn(calling_fn=calling_fn, *args, **kwargs)(fn(*wrapper_args, **wrapper_kwargs))
+            
+            return wrapper
+        return decorator
+    '''
+
+    def locking(calling_fn=None, timer_name=None, long_timeout=None, short_timeout=.1, timer_data=None, ignore_lock=False):
+        def decorator(fn):
+            @wraps(fn)
+            def wrapper(*args, **kwargs):
+                self = args[0]
+
+                if timer_name is not None:
+                    exec(f"self.{timer_name}.cancel()")
+                    #rospy.logerr(f"got here from {calling_fn}")
+
+                # only proceed if can obtain lock
+                if self.locked and not ignore_lock:
+                    if timer_name is not None and short_timeout is not None:
+                        if type(timer_data) == type(None):
+                            exec(f"self.{timer_name} = threading.Timer({short_timeout}, self.{calling_fn})")
+                        else:    
+                            exec(f"self.{timer_name} = threading.Timer({short_timeout}, self.{calling_fn}, timer_data)")
+                        exec(f"self.{timer_name}.start()")
+                    return False
+                else:
+                    if ignore_lock == False:
+                        self.locked = True
+                    output = None
+                    
+                    try:
+
+                        if timer_name is not None and long_timeout is not None:
+                            exec(f"self.{timer_name} = threading.Timer({long_timeout}, self.{calling_fn})")
+                            exec(f"self.{timer_name}.start()")
+
+                        output = fn(self, *args, **kwargs)
+
+                    except:
+                        traceback.print_exc()
+                    finally:
+                        if ignore_lock == False:
+                            self.locked = False
+
+                    return output
+
+            return wrapper
+        return decorator
+
+    def resample(self, ignore_lock=False):
         """Resamples particles by weight
 
         Returns:
@@ -253,63 +317,68 @@ class ParticleFilter:
             False if canceled because previous resampling was still running
 
         """
-        
-        # fail if not done processing previous request yet, or processing another request
-        
-        if self.locked == True:
-            self.reset_resample_timer(.001)
-            return False
 
-        # otherwise, resample the particles by weight
-        else:
-            self.locked = True
-            self.reset_resample_timer()
+        timer_name = "resample_timer" if self.options["use_timers"] == True else None
+        @ParticleFilter.locking("resample", timer_name=timer_name, long_timeout=self.options["resample_interval"], ignore_lock=ignore_lock)
+        def inner_resample(self, *args, **kwargs):
 
-        weights = self.reweight()
-        assert np.sum(weights) > 0, "Weights must be positive."
+            weights = self.reweight()
+            assert np.sum(weights) > 0, "Weights must be positive."
 
-        current_num_particles = np.shape(self.particles)[0]
+            current_num_particles = np.shape(self.particles)[0]
 
-        cumulative_importance = 0
-        importance_cdf = np.zeros(current_num_particles, dtype=float)
-        for i in range(current_num_particles):
-            cumulative_importance += weights[i]
-            importance_cdf[i] = cumulative_importance
+            cumulative_importance = 0
+            importance_cdf = np.zeros(current_num_particles, dtype=float)
+            for i in range(current_num_particles):
+                cumulative_importance += weights[i]
+                importance_cdf[i] = cumulative_importance
 
-        # draw requested number of particles from this filter's learned distribution
-        num_from_filter_dist = self.options["num_particles"] - self.options["resample_noise_count"]
-        #rospy.loginfo(num_from_filter_dist)
-        new_particle_inds = np.zeros(num_from_filter_dist, dtype=int)
-        for i in range(num_from_filter_dist):
-            selection = np.random.uniform(0,importance_cdf[-1])
-            new_particle_inds[i] = np.searchsorted(importance_cdf, selection)
+            # draw requested number of particles from this filter's learned distribution
+            num_from_filter_dist = self.options["num_particles"] - self.options["resample_noise_count"]
+            #rospy.loginfo(num_from_filter_dist)
+            new_particle_inds = np.zeros(num_from_filter_dist, dtype=int)
+            for i in range(num_from_filter_dist):
+                selection = np.random.uniform(0,importance_cdf[-1])
+                new_particle_inds[i] = np.searchsorted(importance_cdf, selection)
+                
+            particles_slice = self.particles[new_particle_inds,:]
+            self.particles = copy.deepcopy(particles_slice)
             
-        self.particles = self.particles[new_particle_inds,:]
-        self.particle_data = self.particle_data[new_particle_inds]
-        if self.options["reset_weight_on_resample"] == True:
-            self.particles[:,self.WEIGHT] = self.options["initial_weight"]
+            particle_data_slice = self.particle_data[new_particle_inds]
+            self.particle_data = np.array([{} for i in range(len(particle_data_slice))])
+            for i in range(len(particle_data_slice)):
+                self.particle_data[i] = copy.deepcopy(particle_data_slice[i])
+            
+            if self.options["reset_weight_on_resample"] == True:
+                self.particles[:,self.WEIGHT] = self.options["initial_weight"]
 
-        #rospy.loginfo(len(self.particles))
+            #rospy.loginfo(len(self.particles))
 
-        # draw remaining particles from this filter's null distribution
-        if self.options["resample_noise_count"] > 0:
-            null_xy = self.options["null_linear_dist"].draw(self.options["resample_noise_count"])
-            null_angle = self.options["null_angular_dist"](self.options["resample_noise_count"])
-            null_weight = np.ones([self.options["resample_noise_count"], 1])*self.options["initial_weight"]
-            null_data = np.array([{} for i in range(self.options["resample_noise_count"])])
+            # draw remaining particles from this filter's null distribution
+            if self.options["resample_noise_count"] > 0:
+                null_xy = self.options["null_linear_dist"].draw(self.options["resample_noise_count"])
+                null_angle = self.options["null_angular_dist"](self.options["resample_noise_count"])
+                null_weight = np.ones([self.options["resample_noise_count"], 1])*self.options["initial_weight"]
+                null_data = np.array([{} for i in range(self.options["resample_noise_count"])])
 
-            null_particles = np.hstack((null_xy, np.reshape(null_angle, [-1,1]), null_weight))
-            self.particles = np.vstack((self.particles, null_particles))
-            self.particle_data = np.hstack((self.particle_data, null_data))
+                null_particles = np.hstack((null_xy, np.reshape(null_angle, [-1,1]), null_weight))
+                self.particles = np.vstack((copy.deepcopy(self.particles), null_particles))
+                self.particle_data = np.hstack((copy.deepcopy(self.particle_data), null_data))
 
-        #rospy.loginfo(len(self.particles))
+            #rospy.loginfo(len(self.particles))
 
-        self.locked = False
-        return True
+            return True
+
+        inner_resample(self)
 
     def reweight(self):
         # override to adjust weights before resampling
         return self.particles[:,self.WEIGHT]
+
+    #not supported because it would require passing locks which is not currently supported
+    #@ParticleFilter.locking("resize", timer_name="resize_timer")
+    #def resize(self, new_size, *args, **kwargs):
+    #    self.particles
 
     def make_cloud(self, points):
         pc = PointCloud()
@@ -330,13 +399,6 @@ class ParticleFilter:
             pc.channels[1].values[i] = particle[self.WEIGHT]
         
         return pc
-
-    def decloud(self, cloud):
-        points = [(pt.x, pt.y, ang, w) for pt, ang, w in zip(cloud.points, cloud.channels[0].values, cloud.channels[1].values)]
-        if len(points) > 0:
-            return np.vstack(points)
-        else:
-            return np.array(())
 
     def transform_all(self, point):
         '''
@@ -361,7 +423,7 @@ class ParticleFilter:
 
         x = np.cos(angle_1 + angle_2)*length + reference[self.X]
         y = np.sin(angle_1 + angle_2)*length + reference[self.Y]
-        angle = 180/np.pi*(angle_1 + angle_2) + point[self.ANGLE]
+        angle = point[self.ANGLE]#180/np.pi*(angle_1 + angle_2) + point[self.ANGLE]
         angle = ((angle + 540) % 360) - 180
 
 
@@ -371,9 +433,31 @@ class ParticleFilter:
         raise Exception("get_occupancy_grid function is not yet defined")
 
     def close(self):
-        self.resample_timer.cancel()
-        time.sleep(.001)
-        self.resample_timer.cancel()
+        try:
+            self.resample_timer.cancel()
+        except:
+            pass
+
+    def __deepcopy__(self, memo):
+        
+        pf = ParticleFilter(FilterOptions(self.options))
+        memo[id(self)] = pf
+        
+        pf.particles = copy.deepcopy(self.particles, memo)
+
+        pf.particle_data = np.array([{} for i in range(len(self.particle_data))])
+        memo[id(self.particle_data)] = pf.particle_data
+        for i in range(len(pf.particle_data)):
+            pf.particle_data[i] = copy.deepcopy(self.particle_data[i], memo)
+        
+        return pf
+
+    def decloud(cloud):
+        points = [(pt.x, pt.y, ang, w) for pt, ang, w in zip(cloud.points, cloud.channels[0].values, cloud.channels[1].values)]
+        if len(points) > 0:
+            return np.vstack(points)
+        else:
+            return np.array(())
 
 
 if __name__ == "__main__":

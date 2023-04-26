@@ -21,7 +21,7 @@ class Mapper(pf.ParticleFilter):
 
         options.options["initial_linear_dist"] = pf.UniformDistribution2D((-10,10),(-10,10))
         options.options["null_linear_dist"] = pf.UniformDistribution2D((-10,10),(-10,10))
-        options.options["initial_weight"] = 0
+        options.options["initial_weight"] = time.time()
         super().__init__(options)
 
         self.robot_particles = None
@@ -54,66 +54,76 @@ class Mapper(pf.ParticleFilter):
     def prune_map(self, data):
 
         #self.prune_timer.cancel()
-        if self.locked == True or type(self.robot_particles) is type(None):
-            self.prune_timer = threading.Timer(.1, self.prune_map, [data])
-            self.prune_timer.start()
+        if type(self.robot_particles) == type(None):
+            self.prune_timer.cancel()
+            self.prune_timer = threading.Timer(.01, self.prune_map, [data])
+            self.prune_timer.start()   
             return False
-        else:
-            self.locked = True
 
-        measured_particles = self.decloud(data)
-        if len(measured_particles) == 0:
-            self.locked = False
-            return True
-    
-        #new_particles = np.empty(np.shape(measured_particles))
-        re_weights = set()
+        @pf.ParticleFilter.locking(calling_fn="prune_map", timer_name="prune_timer", short_timeout=.01, timer_data=[data])
+        def inner_prune(self, *args, **kwargs):
 
-        for measured_i in range(np.shape(measured_particles)[0]):
-            
-            # add new particle measured distance from a random reference particle
-            ref_index = np.random.randint(len(self.robot_particles))
-            ref_particle = self.robot_particles[ref_index,:]
+            measured_particles = pf.ParticleFilter.decloud(data)
+            if len(measured_particles) == 0:
+                return True
+        
+            #new_particles = np.empty(np.shape(measured_particles))
+            re_weights = set()
 
-            #new_particles[measured_i, :] = self.transform_one(measured_particles[measured_i,:], ref_particle)
-            #new_particles[measured_i, self.WEIGHT] = self.get_weight()
+            num_particles = max(1, int(np.ceil(np.shape(measured_particles)[0]/5)))
+            for measured_i in range(num_particles):
+                
+                # select new particle measured distance from a random reference particle
+                ref_index = np.random.randint(len(self.robot_particles))
+                ref_particle = self.robot_particles[ref_index,:]
 
-            ## downweight particles on path from reference to new particle
-            # compute stats of new particles
-            magnitude = np.sqrt(np.sum(measured_particles[measured_i,self.X:self.Y+1]**2))
-            magnitude_scaling = .9
-            measured_angle = 180/np.pi*np.arctan2(measured_particles[measured_i,self.Y],measured_particles[measured_i,self.X])
-            angle = (measured_angle + ref_particle[self.ANGLE] + 180) % 360 - 180
-            delta_angle = 30 #degrees
+                #new_particles[measured_i, :] = self.transform_one(measured_particles[measured_i,:], ref_particle)
+                #new_particles[measured_i, self.WEIGHT] = self.get_weight()
 
-            # compute stats of existing particles and select ones on path
-            particle_inds_to_examine = random.sample(range(len(self.particles)), 50)
-            reweighted_count = 0
-            delta_Y = self.particles[particle_inds_to_examine,self.Y]-ref_particle[self.Y]
-            delta_X = self.particles[particle_inds_to_examine,self.X]-ref_particle[self.X]
-            robot_to_map_vecs_YX = np.hstack([np.reshape(delta_Y,[-1,1]), np.reshape(delta_X,[-1,1])])
-            base_angles = 180/np.pi*np.arctan2(robot_to_map_vecs_YX[:,0],robot_to_map_vecs_YX[:,1])
-            
-            for map_particles_i in range(len(particle_inds_to_examine)):
-                test_magnitude = np.sqrt(np.sum(robot_to_map_vecs_YX[map_particles_i,:]**2))
-                test_angle = (base_angles[map_particles_i] - angle + 540) % 360 - 180
+                ## downweight particles on path from reference to new particle
+                # compute stats of new particles
+                magnitude = np.sqrt(np.sum(measured_particles[measured_i,self.X:self.Y+1]**2))
+                magnitude_scaling = .9
+                measured_angle = 180/np.pi*np.arctan2(measured_particles[measured_i,self.Y],measured_particles[measured_i,self.X])
+                angle = (measured_angle + ref_particle[self.ANGLE] + 180) % 360 - 180
+                delta_angle = 30 #degrees
 
-                #if test_magnitude < 1 and map_particles_i % 10 == 0:
-                #    rospy.loginfo(f'test: {test_magnitude}, mag: {magnitude}, angle: {test_angle}')
-                if test_magnitude < magnitude_scaling*magnitude and -delta_angle < test_angle and test_angle < delta_angle:
-                    re_weights.add(particle_inds_to_examine[map_particles_i])
-                    reweighted_count += 1
-            
-        # actually downweight the selected particles
-        indecies = list(re_weights)
-        self.particles[indecies,self.WEIGHT] = self.particles[indecies,self.WEIGHT]/2
-        #rospy.loginfo(reweighted_count)
+                #rospy.loginfo(ref_particle)
 
-        #self.particles = np.vstack([self.particles, new_particles])
-        #self.particle_data = np.hstack([self.particle_data, [{}]*len(new_particles)])
+                # compute stats of existing particles and select ones on path
+                particle_inds_to_examine = random.sample(range(len(self.particles)), 100) #15
+                reweighted_count = 0
+                delta_Y = self.particles[particle_inds_to_examine,self.Y]-ref_particle[self.Y]
+                delta_X = self.particles[particle_inds_to_examine,self.X]-ref_particle[self.X]
+                robot_to_map_vecs_YX = np.hstack([np.reshape(delta_Y,[-1,1]), np.reshape(delta_X,[-1,1])])
+                base_angles = 180/np.pi*np.arctan2(robot_to_map_vecs_YX[:,0],robot_to_map_vecs_YX[:,1])
+                
 
-        self.publish()
-        self.locked = False
+                #rospy.loginfo(self.particles[particle_inds_to_examine,:])
+
+                for map_particles_i in range(len(particle_inds_to_examine)):
+                    test_magnitude = np.sqrt(np.sum(robot_to_map_vecs_YX[map_particles_i,:]**2))
+                    test_angle = (base_angles[map_particles_i] - angle + 540) % 360 - 180
+
+                    if test_magnitude < 1 and map_particles_i % 10 == 0:
+                        rospy.loginfo(f'test: {test_magnitude}, mag: {magnitude}, angle: {test_angle}')
+                    if test_magnitude < magnitude_scaling*magnitude and -delta_angle < test_angle and test_angle < delta_angle:
+                        re_weights.add(particle_inds_to_examine[map_particles_i])
+                        reweighted_count += 1
+                
+            # actually downweight the selected particles
+            indecies = list(re_weights)
+            self.particles[indecies,self.WEIGHT] = self.particles[indecies,self.WEIGHT]/2
+            #rospy.loginfo(reweighted_count)
+
+            #self.particles = np.vstack([self.particles, new_particles])
+            #self.particle_data = np.hstack([self.particle_data, [{}]*len(new_particles)])
+
+            self.publish()
+        
+        inner_prune(self)
+
+        '''
         if self.measure_count % 5 == 0:
             self.measure_count = 1
             resampled = self.resample()
@@ -122,35 +132,49 @@ class Mapper(pf.ParticleFilter):
             self.measure_count += 1
             #rospy.loginfo("done; thread count: " + str(threading.active_count()))
             return True
+        '''
+        return True
 
     def grow_map(self, data):
-        
-        self.grow_timer.cancel()
-        if self.locked == True or type(self.robot_particles) == type(None):
-            self.grow_timer = threading.Timer(.001, self.grow_map, [data])
-            self.grow_timer.start()
-            return False
-        else:
-            self.locked = True
 
-        new_particles = self.decloud(data)
-        new_particles[:, self.WEIGHT] = new_particles[:, self.WEIGHT]*self.get_weight()
-        self.particles = np.vstack([self.particles, new_particles])
-        self.particle_data = np.array([{}]*len(self.particles))
+        @pf.ParticleFilter.locking(calling_fn="grow_map", timer_name="grow_timer", short_timeout=.05, timer_data=[data])
+        def inner_grow_map(self, *args, **kwargs):
 
-        self.publish()
-        self.locked = False
-        resampled = self.resample()
-        
-        return resampled
+            new_particles = pf.ParticleFilter.decloud(data)
+            num_particles_to_keep = int(self.options["num_particles"]/10)
+            particle_inds_to_keep = np.random.randint(0, high=len(new_particles), size=num_particles_to_keep)
+            particles_to_keep = new_particles[particle_inds_to_keep,:]
+            particles_to_keep[:,self.WEIGHT] = time.time()*particles_to_keep[:,self.WEIGHT]
+            self.particles = np.vstack([self.particles, particles_to_keep])
+            self.particle_data = np.array([{}]*len(self.particles))
+
+            rospy.loginfo(f"num particles: {num_particles_to_keep}")
+
+            self.publish()
+            
+            self.resample(ignore_lock=True)
+
+        inner_grow_map(self)
+
+        return True
+
+
+    def resample(self, ignore_lock=False):
+        super().resample(ignore_lock)
+        for i in range(len(self.particles)):
+            self.particles[i,0:2] += np.random.randn(2)/50
+        return True
 
     def get_weight(self):
         #return 1/(1 + 1e-2*(time.time()-self.start_time))
-        return 1 #time.time()
+        return time.time()
 
 
     def reweight(self):
-        return np.ones(np.shape(self.particles)[0]) #self.reweight_linear()
+        return self.reweight_linear()
+
+    def reweight_null(self):
+        return np.ones(np.shape(self.particles)[0])
 
     def reweight_linear(self):
         new_weight = np.empty(np.shape(self.particles)[0])
@@ -189,7 +213,7 @@ class Mapper(pf.ParticleFilter):
         return new_weight
 
     def update_robot(self, data):
-        self.robot_particles = self.decloud(data)
+        self.robot_particles = pf.ParticleFilter.decloud(data)
 
     def publish(self):
         # restart timer
@@ -207,8 +231,8 @@ if __name__ == "__main__":
             "publish_interval": 1e6,
             "resample_interval": 1e6,
             "reset_weight_on_resample": False,
-            "num_particles": 800,
-            "resample_noise_count": 5
+            "num_particles": 3000, #800
+            "resample_noise_count": 0
         })
     map = Mapper(options)
     map.start()

@@ -1,4 +1,5 @@
 import cv2
+import annoy
 import numpy as np
 import sklearn.neighbors as skln
 import sklearn.linear_model as sklm
@@ -74,14 +75,72 @@ def compare_images(base_coords, compare_coords, base_features, compare_features)
     else:
         return 1-feature_distance/feature_sum
 
+def estimate_translation_and_zoom(base_feature_coords, translated_feature_coords, base_features, translated_features, image_shape):
+    if len(translated_feature_coords) == 0:
+        return 0, 0, np.inf
+    
+    # fit tree for base features
+    #nn_tree = skln.NearestNeighbors(n_neighbors = 1, algorithm = "kd_tree",
+    #                                        leaf_size = 5, n_jobs = 1)
+    #nn_tree.fit(base_features)
+    f = base_features.shape[1]
+    t = 50
+    ai = annoy.AnnoyIndex(f, metric='euclidean')
+    for i in range(base_features.shape[0]):
+        ai.add_item(i, base_features[i,:])
 
-def estimate_translation_and_zoom(base_feature_coords, translated_feature_coords, base_features, translated_features):
+    ai.build(t, n_jobs=1)
+
+    # calculate most similar translated features and their translation
+    num_features = np.shape(translated_feature_coords)[0]
+    translations = np.empty([num_features, 2])
+    scores = np.empty([num_features])
+    for i in range(num_features):
+        
+        neighbors_to_find = 1
+        neighbor = ai.get_nns_by_vector(translated_features[i,:], neighbors_to_find, search_k=-1, include_distances=True)
+        local_scores = np.array(neighbor[1])
+        #neighbor = nn_tree.kneighbors([translated_features[i,:]], neighbors_to_find, return_distance=True)
+        #local_scores = neighbor[0].flatten()
+        
+        average_base_coord = np.average(base_feature_coords[neighbor[0],:], weights=np.exp(-local_scores)+.001, axis=0)
+        #average_base_coord = np.average(base_feature_coords[neighbor[1],:], weights=np.exp(-local_scores)+.001, axis=1)
+        translations[i, :] = translated_feature_coords[i,:] - average_base_coord
+        scores[i] = np.min(local_scores)
+
+    # calculate average translation, zoom, and score
+    x_model = sklm.LinearRegression()
+    xx = translated_feature_coords[:,:1]
+    xy = translations[:,0].flatten()
+    weights = np.exp(-scores).flatten()
+    x_model.fit(xx, xy, weights)
+    zoom_x = x_model.coef_[0]
+    translate_x = x_model.predict(np.reshape(image_shape[1]/2,[-1,1]))#x_model.intercept_
+
+    y_model = sklm.LinearRegression()
+    yx = translated_feature_coords[:,1:]
+    yy = translations[:,1].flatten()
+    y_model.fit(yx, yy, weights)
+    zoom_y = y_model.coef_[0]
+    translate_y = y_model.predict(np.reshape(image_shape[0]/2,[-1,1]))#y_model.intercept_
+
+    zoom = zoom = 1/(np.mean([zoom_x, zoom_y])+1)
+    translation = -np.array((translate_x.squeeze(), translate_y.squeeze()))
+    score = np.mean([x_model.score(xx, xy, weights), y_model.score(yx, yy, weights)])
+    #score = np.mean(scores)
+
+    # return
+    return translation, zoom, score
+
+
+'''
+def estimate_translation_and_zoom(base_feature_coords, translated_feature_coords, base_features, translated_features, image_shape):
     if len(translated_feature_coords) == 0:
         return 0, 0, np.inf
     
     # fit tree for base features
     nn_tree = skln.NearestNeighbors(n_neighbors = 1, algorithm = "kd_tree",
-                                            leaf_size = 10, n_jobs = 4)
+                                            leaf_size = 5, n_jobs = 4)
     nn_tree.fit(base_features)
 
     # calculate most similar translated features and their translation
@@ -104,63 +163,19 @@ def estimate_translation_and_zoom(base_feature_coords, translated_feature_coords
     weights = np.exp(-scores).flatten()
     x_model.fit(xx, xy, weights)
     zoom_x = x_model.coef_[0]
-    translate_x = x_model.intercept_
+    translate_x = x_model.predict(np.reshape(image_shape[1]/2,[-1,1]))
 
     y_model = sklm.LinearRegression()
     yx = translated_feature_coords[:,1:]
     yy = translations[:,1].flatten()
     y_model.fit(yx, yy, weights)
     zoom_y = y_model.coef_[0]
-    translate_y = y_model.intercept_
+    translate_y = y_model.predict(np.reshape(image_shape[0]/2,[-1,1]))
 
-    translation = (translate_x, translate_y)
-    zoom = np.mean([zoom_x, zoom_y])    
+    zoom = zoom = 1/(np.mean([zoom_x, zoom_y])+1) 
+    translation = -np.array((translate_x.squeeze(), translate_y.squeeze()))
     score = np.mean([x_model.score(xx, xy, weights), y_model.score(yx, yy, weights)])
-    #score = np.mean(scores)
 
     # return
     return translation, zoom, score
-
-
-'''
-def estimate_translation_and_zoom(base_feature_coords, translated_feature_coords, base_features, translated_features):
-    if len(translated_feature_coords) == 0:
-        return 0, 0, np.inf
-    
-    # fit tree for base features
-    nn_tree = skln.NearestNeighbors(n_neighbors = 1, algorithm = "kd_tree",
-                                            leaf_size = 10, n_jobs = 4)
-    nn_tree.fit(base_features)
-
-    # calculate most similar translated features and their translation
-    num_features = np.shape(translated_feature_coords)[0]
-    translations = np.empty([num_features, 2])
-    scores = np.empty([num_features])
-    for i in range(num_features):
-        
-        neighbors_to_find = 1
-        neighbor = nn_tree.kneighbors([translated_features[i,:]], neighbors_to_find, return_distance=True)
-        local_scores = neighbor[0].flatten()
-        average_base_coord = np.average(base_feature_coords[neighbor[1],:], weights=np.exp(-local_scores)+.001, axis=1)
-        translations[i, :] = translated_feature_coords[i,:] - average_base_coord
-        scores[i] = np.min(local_scores)
-
-    # calculate average translation, zoom, and score
-    x_model = sklm.LinearRegression()
-    x_model.fit(translated_feature_coords[:,:1], translations[:,0].flatten(), np.exp(-scores).flatten())
-    zoom_x = x_model.coef_[0]
-    translate_x = x_model.intercept_
-
-    y_model = sklm.LinearRegression()
-    y_model.fit(translated_feature_coords[:,1:], translations[:,1].flatten(), np.exp(-scores).flatten())
-    zoom_y = y_model.coef_[0]
-    translate_y = y_model.intercept_
-
-    translation = (translate_x, translate_y)
-    zoom = np.mean([zoom_x, zoom_y])    
-    score = np.mean(scores)
-
-    # return
-    return translation, zoom, score
-
 '''

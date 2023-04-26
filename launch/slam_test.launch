@@ -1,13 +1,27 @@
 <launch>
+	///includes
 	<include file="$(find witmotion_ros)/launch/witmotion.launch" />
 	<include file="$(find freenove_ros)/freenove.launch"/>
 
+	///core nodes
 	<node name="enable" pkg="pet" type="enable.py"/>
 	<node name="legs" pkg="pet" type="legs.py"/>
-	<node name="mapper" pkg="pet" type="mapper.py" launch-prefix="nice -n -15"/>
-	<node name="robot_localizer" pkg="pet" type="robot_localizer.py" launch-prefix="nice -n -15"/>
+	<node name="mapper" pkg="pet" type="mapper.py" launch-prefix="nice -n -10"/>
+	<node name="robot_localizer" pkg="pet" type="robot_localizer.py" launch-prefix="nice -n -13"/>
 	<node name="optical_flow" pkg="pet" type="vision_for_slam.py"/>
 
+	///visualization
+	<node name="rviz" pkg="rviz" type="rviz"/>
+	<node name="rqt_console" pkg="rqt_console" type="rqt_console"/>
+
+	///parameters
 	<param name="/raspicam_node/enable_raw" type="boolean" value="True" />
-	
+	<param name="/robot_localizer/move_interval" type="double" value=".5" />
+	<param name="/robot_localizer/measure_interval" type="double" value=".1" />
+	<param name="/robot_localizer/weight_interval" type="double" value="15" />
+	<param name="/robot_localizer/publish_interval" type="double" value="1e6" />
+	<param name="/robot_localizer/localizer_noise_count" type="int" value="0" />
+	<param name="/robot_localizer/local_map_update_subset_factor" type="double" value="5" />
+	<param name="/robot_localizer/local_map_noise_count" type="int" value="0" />
+
 </launch>
