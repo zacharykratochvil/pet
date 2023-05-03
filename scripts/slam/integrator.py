@@ -57,6 +57,8 @@ class Integrator:
         self.prev_store_stamp_odo = self.latest_store_stamp
         self.latest_store_stamp_odo = time.time()
 
+        self.initial_orientation = {"orientation":(0.0,0.0,0.0)}
+
         # stores odometer estimated accelerations and velocities
         self.vel_integral_odo = {"linear_vel":np.array([0.0,0.0,0.0])}
         
@@ -177,7 +179,9 @@ class Integrator:
                 -msg.angular_velocity.z*180/np.pi
             )
         rotation_obj = transform.Rotation.from_quat((msg.orientation.x, msg.orientation.y, msg.orientation.z, msg.orientation.w))
-        self.latest_odo["orientation"] = -transform.Rotation.as_euler(rotation_obj)
+        if np.sum(self.initial_orientation["orientation"]) == 0 and np.sum(self.prev_odo["orientation"]) == 0:
+            self.initial_orientation["orientation"] = -rotation_obj.as_euler('XYZ',degrees=True)
+        self.latest_odo["orientation"] = -rotation_obj.as_euler('XYZ',degrees=True) - self.initial_orientation["orientation"]
 
         rospy.loginfo(self.latest_odo["angular_vel"][2])
 
@@ -368,7 +372,7 @@ class Integrator:
                 #self.latest_twist["linear_vel"]
         #    ),0,ddof=1)*delta_time**2
         self.pos_variance["linear_pos"] += linear_variance*delta_time**2
-        self.pos_variance["angular_pos"] += np.array((.1,.1,.1))*delta_time**2 #np.array((.05,.05,.05))*delta_time**2
+        self.pos_variance["angular_pos"] += np.array((.5,.5,.5))*delta_time**2 #np.array((.05,.05,.05))*delta_time**2
 
         '''np.var((
             self.prev_odo["angular_vel"],
@@ -414,7 +418,7 @@ class Integrator:
         return _pos_integral, _pos_variance
 
     def get_orientation(self):
-        return self.latest_odo["orientation"]
+        return ((self.latest_odo["orientation"] + 540) % 360) - 180
 
     def transform_one(self, point, reference):
         '''

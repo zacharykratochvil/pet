@@ -70,7 +70,7 @@ class Mapper(pf.ParticleFilter):
             #new_particles = np.empty(np.shape(measured_particles))
             re_weights = set()
 
-            num_particles = max(1, int(np.ceil(np.shape(measured_particles)[0]/5)))
+            num_particles = max(1, int(np.ceil(np.shape(measured_particles)[0]/3)))
             for measured_i in range(num_particles):
                 
                 # select new particle measured distance from a random reference particle
@@ -91,7 +91,7 @@ class Mapper(pf.ParticleFilter):
                 #rospy.loginfo(ref_particle)
 
                 # compute stats of existing particles and select ones on path
-                particle_inds_to_examine = random.sample(range(len(self.particles)), 100) #15
+                particle_inds_to_examine = random.sample(range(len(self.particles)), 500) #15
                 reweighted_count = 0
                 delta_Y = self.particles[particle_inds_to_examine,self.Y]-ref_particle[self.Y]
                 delta_X = self.particles[particle_inds_to_examine,self.X]-ref_particle[self.X]
