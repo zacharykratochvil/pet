@@ -24,7 +24,9 @@ import threading
 import sklearn.neighbors as skln
 from integrator import Integrator
 from common.accumulator import Accumulator, UltraSonicAccumulator
+from common import vision_features as vf
 from scipy.special import expit as sigmoid
+import sklearn.cluster as sklc
 
 #from mapper import Mapper
 
@@ -34,6 +36,7 @@ from freenove_ros.msg import TwistDuration, SensorDistance
 from sensor_msgs.msg import Imu, PointCloud
 from geometry_msgs.msg import Point32, Twist
 from std_msgs.msg import Float32
+from pet.msg import Localization, LocationCandidate
 
 class RobotLocalizer(pf.ParticleFilter):
     """Summary of class here.
@@ -67,7 +70,7 @@ class RobotLocalizer(pf.ParticleFilter):
                                                   "num_particles":50,
                                                   "resample_noise_count":np.nan
                                                   })
-        self.measure_timers = []
+        #self.measure_timers = []
         for i in range(len(self.particles)):
             self.particle_data[i]["map"] = pf.ParticleFilter(self.inner_options)
             #self.measure_timers.append(threading.Timer(1e6,None))
@@ -83,7 +86,8 @@ class RobotLocalizer(pf.ParticleFilter):
         self.move_timer = threading.Timer(-1, self.move)
         self.weight_timer = threading.Timer(-1, self.weight)
         self.measure_timer = threading.Timer(-1, self.measure)
-        self.publish_timer = threading.Timer(-1, self.publish_particles)
+        self.particle_timer = threading.Timer(-1, self.publish_particles)
+        self.location_timer = threading.Timer(1, self.publish_location)
 
         self.drive_sub = rospy.Subscriber("drive_twist", TwistDuration, self.integrator.on_twist, queue_size=10)
         self.witmotion_sub = rospy.Subscriber("imu", Imu, self.integrator.on_odo, queue_size=1)
@@ -94,6 +98,7 @@ class RobotLocalizer(pf.ParticleFilter):
         self.measurement_pub = rospy.Publisher("measured_particles", PointCloud, queue_size=1)
         self.particle_pub = rospy.Publisher("robot_particles", PointCloud, queue_size=1)
         self.local_particle_pub = rospy.Publisher("local_map_particles", PointCloud, queue_size=1)
+        self.location_pub = rospy.Publisher("robot_location", Localization, queue_size=1)
 
     def start(self):
         """Connects to the next available port.
@@ -115,8 +120,9 @@ class RobotLocalizer(pf.ParticleFilter):
         self.move_timer.start()
         self.weight_timer.start()
         self.measure_timer.start()
-        self.publish_timer.start()
+        self.particle_timer.start()
         '''
+        self.location_timer.start()
 
         self.publish_particles()
         rospy.loginfo(self.particle_data[0]["map"].particles[:,0:2])
@@ -163,9 +169,9 @@ class RobotLocalizer(pf.ParticleFilter):
 
         if self.options["publish_interval"] != config["publish_interval"]:
             self.options["publish_interval"] = config["publish_interval"]
-            self.publish_timer.cancel()
-            self.publish_timer = threading.Timer(self.options["publish_interval"], self.publish_particles)
-            self.publish_timer.start()
+            self.particle_timer.cancel()
+            self.particle_timer = threading.Timer(self.options["publish_interval"], self.publish_particles)
+            self.particle_timer.start()
         
         # update measurement properties
         self.options["local_map_update_subset_factor"] = config["local_map_update_subset_factor"]
@@ -197,7 +203,9 @@ class RobotLocalizer(pf.ParticleFilter):
                 if i > 0:
                     pass#rospy.logerr(f'resample dict: {self.particle_data[i] is self.particle_data[i-1]}')
 
+        start = time.time()
         inner_resample(self)
+        #rospy.logerr(f"resample: {time.time()-start}")
 
     def map(self, data):
         self.latest_map = pf.ParticleFilter.decloud(data)
@@ -239,7 +247,9 @@ class RobotLocalizer(pf.ParticleFilter):
         
             return True
 
+        start = time.time()
         inner_move(self)
+        #rospy.logerr(f"move: {time.time()-start}")
 
     def measure(self):
         """Handles measurement inputs.
@@ -307,6 +317,7 @@ class RobotLocalizer(pf.ParticleFilter):
                 measure_resample(self)
                 '''
                 
+                #rospy.logerr(f"particle {added_particles[0,:]}")
                 self.particle_data[i]["map"].resample()
                 if ("map" in self.particle_data[i].keys()) == False:
                     self.particle_data[i]["map"] = pf.ParticleFilter(self.inner_options)
@@ -318,8 +329,9 @@ class RobotLocalizer(pf.ParticleFilter):
             
             return True
 
+        start = time.time()
         inner_measure(self)
-
+        #rospy.logerr(f"measure: {time.time()-start}")
 
 
     def weight(self):
@@ -342,6 +354,7 @@ class RobotLocalizer(pf.ParticleFilter):
         
         @pf.ParticleFilter.locking("weight", timer_name="weight_timer", long_timeout=self.options["weight_interval"])
         def inner_weight(self, *args, **kwargs):
+
 
             # compare to map, score
             num_neighbors = 10
@@ -401,7 +414,8 @@ class RobotLocalizer(pf.ParticleFilter):
                     weight = 0
                 self.particles[i,self.WEIGHT] = weight
 
-                new_local_particles = np.empty([len(particle_copy), 4])
+                particle_copy = self.particle_data[i]["map"].particles
+                new_local_particles = np.empty([np.shape(particle_copy)[0], 4])
                 new_local_particles[:,0:2] = particle_copy[:,0:2]
                 new_local_particles[:,self.ANGLE] = 0
                 new_local_particles[:,self.WEIGHT] = weight
@@ -421,19 +435,82 @@ class RobotLocalizer(pf.ParticleFilter):
 
             return True
 
+        start = time.time()
         inner_weight(self)
+        #rospy.logerr(f"weighting: {time.time()-start}")
 
         return True
 
     def publish_particles(self):
-        self.publish_timer.cancel()
-        self.publish_timer = threading.Timer(self.options["publish_interval"], self.publish_particles)
-        self.publish_timer.start()
+        self.particle_timer.cancel()
+        self.particle_timer = threading.Timer(self.options["publish_interval"], self.publish_particles)
+        self.particle_timer.start()
 
         pc = self.make_cloud(self.particles)
         self.particle_pub.publish(pc)
 
+    def publish_location(self):
+        self.location_timer.cancel()
+        self.location_timer = threading.Timer(1, self.publish_location)
+        self.location_timer.start()
 
+        start = time.time()
+
+        # find largest cluster in robot map
+        candidates = []
+
+        '''
+        grid_spacing = np.arange(-10,10.01,.5)
+        self.seeds = []
+        for x in grid_spacing:
+            for y in grid_spacing: 
+                self.seeds.append((x,y))
+        
+        tuples = []
+        bandwidth = 1.5
+        discretized_particles = np.round(self.particles[:,0:2]*bandwidth)/bandwidth
+        for i in range(np.shape(self.particles)[0]):
+            tuples.append(tuple(discretized_particles[i,:]))
+        seeds = np.vstack(list(set(tuples)))
+
+        rospy.logerr(f"partial clustering 1: {time.time()-start}")
+        '''
+
+        #try:
+        #ms = sklc.MeanShift(bandwidth=bandwidth, bin_seeding=True, n_jobs=1, max_iter=20) #seeds=seeds
+        #ms.fit(self.particles[:,:2])
+        
+        clustered_points = vf.meanshift_plus(self.particles[:,:2],1,.1,5)
+        values, counts = np.unique(clustered_points, return_counts=True, axis=0)
+        sorted_inds = np.argsort(counts) #ascending
+
+        #rospy.logerr(f"partial clustering 1: {time.time()-start}")
+        
+        for i in np.flip(sorted_inds):
+            is_this_cluster = np.all(clustered_points == np.tile(values[i,:],(np.shape(clustered_points)[0], 1)), axis=1)#ms.labels_ == values[i]            
+            cluster_orientations = self.particles[is_this_cluster,2]
+            confidence = np.sum(is_this_cluster)/np.shape(self.particles)[0]
+            spread = np.mean([np.var(self.particles[is_this_cluster,0]), np.var(self.particles[is_this_cluster,1])])
+    
+            candidate = LocationCandidate()
+            candidate.position.x = values[i,0]
+            candidate.position.y = values[i,1]
+            candidate.position.z = 0
+            candidate.orientation.x = 0
+            candidate.orientation.y = 0
+            candidate.orientation.z = vf.angle_mean(cluster_orientations)
+            candidate.confidence = confidence
+            candidate.spread = spread
+            candidates.append(candidate)
+        #except ValueError as e:
+        #    rospy.logerr(f"shape: {np.shape(self.particles)}")
+        #    rospy.logerr(f"nan/inf: {np.any(np.isnan(self.particles))}")
+
+        msg = Localization()
+        msg.candidates = candidates
+        self.location_pub.publish(msg)
+
+        #rospy.logerr(f"clustering 2: {time.time()-start}")
 
 if __name__ == "__main__":
     options = {

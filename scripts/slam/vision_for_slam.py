@@ -16,9 +16,9 @@ class OpticalFlow:
     def __init__(self):
 
 
-        self.min_points = 25 #32
+        self.min_points = 20 #32
         self.min_descriptors = 400 #1000
-        self.min_variance = 10 #15
+        self.min_variance = 7.5 #15
 
         self.accumulator = UltraSonicAccumulator()
 
@@ -108,7 +108,7 @@ class OpticalFlow:
         _, _, score = vf.estimate_translation_and_zoom(self.prev_points, warped_points, self.prev_descriptors, warped_descriptors, self.image.shape)
         '''
 
-        if score < .45 or np.isinf(score) or np.isnan(score) or zoom < .5 or zoom > 2:
+        if score < .4 or np.isinf(score) or np.isnan(score) or zoom < .5 or zoom > 2 or np.any(np.abs(translation) > 500):
             message = Twist()
             message.linear.x = 0
             message.linear.y = 0

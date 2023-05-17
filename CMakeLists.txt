@@ -56,6 +56,8 @@ find_package(catkin REQUIRED COMPONENTS
    msg
    FILES
    LegAngle.msg
+   Localization.msg
+   LocationCandidate.msg
  )
 
 ## Generate services in the 'srv' folder
@@ -78,6 +80,7 @@ find_package(catkin REQUIRED COMPONENTS
    freenove_ros
    speech_recognition_msgs
    sensor_msgs
+   geometry_msgs
  )
 
 ################################################

@@ -4,7 +4,8 @@ import numpy as np
 import sklearn.neighbors as skln
 import sklearn.linear_model as sklm
 import scipy as sp
-
+import rospy
+import time
 
 
 ## from https://medium.com/machine-learning-world/feature-extraction-and-similar-image-search-with-opencv-for-newbies-3c59796bf774
@@ -132,6 +133,100 @@ def estimate_translation_and_zoom(base_feature_coords, translated_feature_coords
     # return
     return translation, zoom, score
 
+# based on https://openaccess.thecvf.com/content/CVPR2021/papers/Jang_MeanShift_Extremely_Fast_Mode-Seeking_With_Applications_to_Segmentation_and_Object_CVPR_2021_paper.pdf
+def meanshift(X, bandwidth, tolerance, max_iter, kernel=lambda x: x**2 < 1):
+    y = np.zeros([max_iter, *np.shape(X)])
+    y[0,:,:] = X
+
+    t = 1
+    while np.sum((y[t,:,:] - y[t-1,:,:])**2) > tolerance and t < max_iter:
+        for i in range(np.shape(X)[0]):
+
+            numerator_sum = 0
+            for j in range(np.shape(X)[0]):
+                numerator_sum += kernel((y[t-1,i,:] - y[t-1,j,:])**2/bandwidth)*y[t-1,j,:]
+
+            denominator_sum = 0
+            for j in range(np.shape(X)[0]):
+                denominator_sum += kernel((y[t-1,i,:] - y[t-1,j,:])**2/bandwidth)
+            
+            y[t,:,:] = numerator_sum/denominator_sum
+
+        t += 1
+
+    return np.squeeze(y[t,:,:])
+
+def meanshift_plus(X, bandwidth, tolerance, max_iter):
+    '''
+    Calculates meanshift++ from paper.
+    '''
+
+    y = np.zeros([max_iter, *np.shape(X)],dtype="float16")
+    y[0,:,:] = X
+    num_samples = np.shape(X)[0]
+    adjacent_cells = (np.asarray((-1,-1)),np.asarray((-1,0)),np.asarray((-1,1)),np.asarray((0,-1)),np.asarray((0,0)),np.asarray((0,1)),np.asarray((1,-1)),np.asarray((1,0)),np.asarray((1,1)))
+    
+    t = 1
+    while t < max_iter and np.sum((y[t,:,:] - y[t-1,:,:])**2) > tolerance:
+        
+        # initialize hash tables with current counts and sums for each grid cell
+        counts = {}
+        sums = {}
+        for s in range(num_samples):
+            grid_key = tuple(np.asarray(y[t-1,s,:]/bandwidth,int))
+
+            if grid_key not in counts:
+                counts[grid_key] = 1
+                sums[grid_key] = y[t-1,s,:].copy()
+            else:
+                counts[grid_key] += 1
+                sums[grid_key] += y[t-1,s,:].copy()
+
+        # compute new mean of each cell based on adjacent cells
+        for s in range(num_samples):
+            grid_key = tuple(np.asarray(y[t-1,s,:]/bandwidth,int))
+
+            numerator_sum = np.zeros(np.shape(X)[1])
+            denominator_sum = 0
+            for v in adjacent_cells:
+                adj_key = (grid_key[0] + v[0], grid_key[1] + v[1])
+
+                if adj_key in sums:
+                    numerator_sum += sums[adj_key]
+                    denominator_sum += counts[adj_key]
+
+            y[t,s,:] = numerator_sum/float(denominator_sum)
+
+        t += 1
+
+    return np.squeeze(y[t-1,:,:])
+
+# From https://stackoverflow.com/questions/23494037/how-do-you-calculate-the-median-of-a-set-of-angles#:~:text=To%20get%20the%20median%20of,have%20more%20than%20one%20angle.
+def angle_interpol(a1, w1, a2, w2):
+    """Weighted avarage of two angles a1, a2 with weights w1, w2"""
+
+    diff = a2 - a1        
+    if diff > 180: a1 += 360
+    elif diff < -180: a1 -= 360
+
+    aa = (w1 * a1 + w2 * a2) / (w1 + w2)
+
+    if aa > 360: aa -= 360
+    elif aa < 0: aa += 360
+
+    return aa
+
+def angle_mean(angle):    
+    """Unweighted average of a list of angles"""
+
+    aa = 0.0
+    ww = 0.0
+
+    for a in angle:
+        aa = angle_interpol(aa, ww, a, 1)
+        ww += 1
+
+    return ((aa + 180) % 360) -180
 
 '''
 def estimate_translation_and_zoom(base_feature_coords, translated_feature_coords, base_features, translated_features, image_shape):

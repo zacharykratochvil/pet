@@ -137,9 +137,10 @@ class Mapper(pf.ParticleFilter):
 
     def grow_map(self, data):
 
-        @pf.ParticleFilter.locking(calling_fn="grow_map", timer_name="grow_timer", short_timeout=.05, timer_data=[data])
+        @pf.ParticleFilter.locking(calling_fn="grow_map", timer_name="grow_timer", short_timeout=.01, timer_data=[data])
         def inner_grow_map(self, *args, **kwargs):
 
+            #rospy.logerr("growing")
             new_particles = pf.ParticleFilter.decloud(data)
             num_particles_to_keep = int(self.options["num_particles"]/10)
             particle_inds_to_keep = np.random.randint(0, high=len(new_particles), size=num_particles_to_keep)
