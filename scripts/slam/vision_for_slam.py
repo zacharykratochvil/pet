@@ -51,7 +51,7 @@ class OpticalFlow:
         if np.var(image) == 0:
             return
 
-        if data.header.seq % 10 != 0:
+        if data.header.seq % 2 != 0:
             return
 
         # enhance image

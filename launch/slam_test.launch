@@ -15,10 +15,11 @@
 	<node name="rqt_console" pkg="rqt_console" type="rqt_console"/>
 
 	///parameters
-	<param name="/raspicam_node/enable_raw" type="boolean" value="True" />
-	<param name="/robot_localizer/move_interval" type="double" value=".5" />
-	<param name="/robot_localizer/measure_interval" type="double" value=".1" />
-	<param name="/robot_localizer/weight_interval" type="double" value="15" />
+	<param name="/raspicam_node/enable_raw" type="boolean" value="False" />
+	<param name="/raspicam_node/framerate" type="int" value="5" />
+	<param name="/robot_localizer/move_interval" type="double" value="1" />
+	<param name="/robot_localizer/measure_interval" type="double" value=".2" />
+	<param name="/robot_localizer/weight_interval" type="double" value="10" />
 	<param name="/robot_localizer/publish_interval" type="double" value="1e6" />
 	<param name="/robot_localizer/localizer_noise_count" type="int" value="0" />
 	<param name="/robot_localizer/local_map_update_subset_factor" type="double" value="5" />
