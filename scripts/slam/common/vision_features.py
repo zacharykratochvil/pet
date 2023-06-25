@@ -201,6 +201,29 @@ def meanshift_plus(X, bandwidth, tolerance, max_iter):
 
     return np.squeeze(y[t-1,:,:])
 
+def kernel_cluster_extreme(particles, scale = .2):
+    adjacent_cells = (np.asarray((-1,-1)),np.asarray((-1,0)),np.asarray((-1,1)),np.asarray((0,-1)),np.asarray((0,0)),np.asarray((0,1)),np.asarray((1,-1)),np.asarray((1,0)),np.asarray((1,1)))    
+    coords = np.vstack(list(particles._hash.keys()))
+    x_lim = (np.min(coords[:,0]), np.max(coords[:,0]))
+    y_lim = (np.min(coords[:,1]), np.max(coords[:,1]))
+    counts = np.zeros((int((x_lim[1]-x_lim[0])/scale)+1, int((y_lim[1]-y_lim[0])/scale)+1))
+    all_coords = np.zeros((int((x_lim[1]-x_lim[0])/scale)+1, int((y_lim[1]-y_lim[0])/scale)+1, 2))
+
+    for xi, x in enumerate(np.arange(*x_lim,scale)):
+        for yi, y in enumerate(np.arange(*y_lim,scale)):
+            all_coords[xi,yi,:] = (x,y)
+
+            # compute count of each cell based on adjacent cells
+            for v in adjacent_cells:
+                key = (x + v[0], y + v[1])
+                counts[xi,yi] += len(particles.get_inds((x,y)))
+
+    xy = np.argmax(counts)
+    flat_all_coords = np.reshape(all_coords,(-1,2))
+    fine_coord_inds = particles.get_inds(flat_all_coords[xy,:])
+    fine_coords = particles.ref[fine_coord_inds,:]
+    return np.mean(fine_coords[:,0:2], axis=0)[np.newaxis,:]
+
 # From https://stackoverflow.com/questions/23494037/how-do-you-calculate-the-median-of-a-set-of-angles#:~:text=To%20get%20the%20median%20of,have%20more%20than%20one%20angle.
 def angle_interpol(a1, w1, a2, w2):
     """Weighted avarage of two angles a1, a2 with weights w1, w2"""

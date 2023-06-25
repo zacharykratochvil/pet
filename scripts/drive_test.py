@@ -58,7 +58,7 @@ class Test:
 
     def move2(self):
         self.t.cancel()
-        self.t = threading.Timer(5, self.move)
+        self.t = threading.Timer(5, self.move2)
         self.t.start()
 
         # find largest cluster in robot map
@@ -115,7 +115,7 @@ class Test:
         message.velocity.angular.x = 0
         message.velocity.angular.y = 0
         message.velocity.angular.z = 0
-        message.duration = 3
+        message.duration = 2
         self.drive_pub.publish(message)
 
     def m1a45(self):

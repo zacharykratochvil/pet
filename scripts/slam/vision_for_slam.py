@@ -1,9 +1,10 @@
 #!/usr/bin/python
 import cv2
-#from PIL import Image as PIL_Image
+from PIL import Image as PIL_Image
 #from io import BytesIO
 import numpy as np
 import rospy
+import time
 from common.accumulator import UltraSonicAccumulator
 import common.vision_features as vf
 
@@ -39,20 +40,22 @@ class OpticalFlow:
         
         rospy.spin()
 
-    def on_image(self, data):        
-
-        #filter data
-        if (rospy.get_rostime() - data.header.stamp).to_sec() > .1:
-            return
+    def on_image(self, data):
         
         int_data = np.frombuffer(data.data, np.uint8)
         image = cv2.imdecode(int_data, cv2.IMREAD_COLOR)
 
+        #filter data
         if np.var(image) == 0:
             return
 
-        if data.header.seq % 2 != 0:
+        #is_stale = False
+        if (rospy.get_rostime() - data.header.stamp).to_sec() > .1:
+            #is_stale = True
             return
+
+        #if data.header.seq % 2 != 0:
+        #    return
 
         # enhance image
         hsv_image = cv2.cvtColor(image, cv2.COLOR_BGR2HSV)
@@ -84,6 +87,10 @@ class OpticalFlow:
         if count_rule and variance_rule:
             translation, zoom, score = vf.estimate_translation_and_zoom(self.prev_points, cur_points, self.prev_descriptors, cur_descriptors, self.image.shape)
         else:
+            #img = np.asarray(self.image, "uint8")
+            #img = PIL_Image.fromarray(self.image)
+            #img.save(f"/home/pi/pics/poor_features_{time.time()}.jpeg")
+
             message = Twist()
             message.linear.x = 0
             message.linear.y = 0
@@ -108,7 +115,11 @@ class OpticalFlow:
         _, _, score = vf.estimate_translation_and_zoom(self.prev_points, warped_points, self.prev_descriptors, warped_descriptors, self.image.shape)
         '''
 
-        if score < .4 or np.isinf(score) or np.isnan(score) or zoom < .5 or zoom > 2 or np.any(np.abs(translation) > 500):
+        if score < .4 or np.isinf(score) or np.isnan(score) or zoom < .66 or zoom > 2 or np.any(np.abs(translation) > 500):
+            #img = np.asarray(self.image, "uint8")
+            #img = PIL_Image.fromarray(self.image)
+            #img.save(f"/home/pi/pics/poor_alignment_{time.time()}.jpeg")
+
             message = Twist()
             message.linear.x = 0
             message.linear.y = 0
@@ -137,6 +148,10 @@ class OpticalFlow:
 
         self.prev_points = np.copy(cur_points)
         self.prev_descriptors = np.copy(cur_descriptors)
+
+        #img = np.asarray(self.image, "uint8")
+        #img = PIL_Image.fromarray(self.image)
+        #img.save(f"/home/pi/pics/zoom_{zoom}_{time.time()}.jpeg")
 
         message = Twist()
         message.linear.x = translation[0]/self.image.shape[1]*image_width

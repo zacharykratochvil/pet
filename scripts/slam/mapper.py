@@ -3,12 +3,13 @@
 import common.particle_filter as pf
 import rospy
 import time
+import random
 import numpy as np
 import threading
 import random
 from scipy.special import expit as sigmoid
 
-from sensor_msgs.msg import Imu, PointCloud
+from sensor_msgs.msg import Imu, PointCloud, ChannelFloat32
 from geometry_msgs.msg import Point32
 
 class Mapper(pf.ParticleFilter):
@@ -30,6 +31,7 @@ class Mapper(pf.ParticleFilter):
         self.grow_timer = threading.Timer(-1,lambda x: x)
         self.map_timer = threading.Timer(self.options["publish_interval"], self.publish)
         
+        self.brick_pub = rospy.Publisher("bricks", PointCloud, queue_size=2)
         self.map_pub = rospy.Publisher("map", PointCloud, queue_size=2)
         self.robot_sub = rospy.Subscriber("robot_particles", PointCloud, self.update_robot, queue_size=2)
         self.robot_map_sub = rospy.Subscriber("local_map_particles", PointCloud, self.grow_map, queue_size=2)
@@ -52,6 +54,8 @@ class Mapper(pf.ParticleFilter):
         rospy.spin()
 
     def prune_map(self, data):
+        self.publish()
+        '''
 
         #self.prune_timer.cancel()
         if type(self.robot_particles) == type(None):
@@ -86,12 +90,12 @@ class Mapper(pf.ParticleFilter):
                 magnitude_scaling = .9
                 measured_angle = 180/np.pi*np.arctan2(measured_particles[measured_i,self.Y],measured_particles[measured_i,self.X])
                 angle = (measured_angle + ref_particle[self.ANGLE] + 180) % 360 - 180
-                delta_angle = 30 #degrees
+                delta_angle = 45 #degrees
 
                 #rospy.loginfo(ref_particle)
 
                 # compute stats of existing particles and select ones on path
-                particle_inds_to_examine = random.sample(range(len(self.particles)), 500) #15
+                particle_inds_to_examine = random.sample(range(len(self.particles)), 100) #15
                 reweighted_count = 0
                 delta_Y = self.particles[particle_inds_to_examine,self.Y]-ref_particle[self.Y]
                 delta_X = self.particles[particle_inds_to_examine,self.X]-ref_particle[self.X]
@@ -123,7 +127,7 @@ class Mapper(pf.ParticleFilter):
         
         inner_prune(self)
 
-        '''
+        ''' 
         if self.measure_count % 5 == 0:
             self.measure_count = 1
             resampled = self.resample()
@@ -132,8 +136,8 @@ class Mapper(pf.ParticleFilter):
             self.measure_count += 1
             #rospy.loginfo("done; thread count: " + str(threading.active_count()))
             return True
-        '''
-        return True
+
+        #return True
 
     def grow_map(self, data):
 
@@ -142,12 +146,14 @@ class Mapper(pf.ParticleFilter):
 
             #rospy.logerr("growing")
             new_particles = pf.ParticleFilter.decloud(data)
-            num_particles_to_keep = int(self.options["num_particles"]/10)
+            num_particles_to_keep = int(self.options["num_particles"]/3)
             particle_inds_to_keep = np.random.randint(0, high=len(new_particles), size=num_particles_to_keep)
-            particles_to_keep = new_particles[particle_inds_to_keep,:]
+            not_bricks = [not self.particles.is_brick(new_particles[particle_inds_to_keep[i],0:2]) for i in range(len(particle_inds_to_keep))]
+            particles_to_keep = new_particles[particle_inds_to_keep[not_bricks],:]
             particles_to_keep[:,self.WEIGHT] = time.time()*particles_to_keep[:,self.WEIGHT]
-            self.particles = np.vstack([self.particles, particles_to_keep])
-            self.particle_data = np.array([{}]*len(self.particles))
+            self.particles.add(particles_to_keep)
+            self.particles.data = np.array([{}]*len(self.particles.ref))
+            self.particles.regenerate_weight()
 
             rospy.loginfo(f"num particles: {num_particles_to_keep}")
 
@@ -159,12 +165,23 @@ class Mapper(pf.ParticleFilter):
 
         return True
 
-
     def resample(self, ignore_lock=False):
+        
+        '''
         super().resample(ignore_lock)
-        for i in range(len(self.particles)):
-            self.particles[i,0:2] += np.random.randn(2)/50
+        for i in range(len(self.particles.ref)):
+            self.particles.ref[i,0:2] += np.random.randn(2)/50
         return True
+        '''
+
+        indecies = list(range(np.shape(self.particles.ref)[0]))
+        inds_to_keep = random.sample(indecies, k=self.options["num_particles"])
+        self.particles.ref = self.particles.ref[inds_to_keep,:]
+        self.particles.data = self.particles.data[inds_to_keep]
+        self.particles.regenerate_hash()
+
+        for i in range(len(self.particles.ref)):
+            self.particles.ref[i,0:2] += np.random.randn(2)/50
 
     def get_weight(self):
         #return 1/(1 + 1e-2*(time.time()-self.start_time))
@@ -178,17 +195,17 @@ class Mapper(pf.ParticleFilter):
         return np.ones(np.shape(self.particles)[0])
 
     def reweight_linear(self):
-        new_weight = np.empty(np.shape(self.particles)[0])
+        new_weight = np.empty(np.shape(self.particles.ref)[0])
 
         # set zeros to baseline weight
         baseline_weight = 1/2
-        zeros = self.particles[:,self.WEIGHT] == 0
+        zeros = self.particles.ref[:,self.WEIGHT] == 0
         new_weight[zeros] = baseline_weight
 
         # otherwise calculate weight as linear function of age
         slope = 1/60
 
-        X = time.time() - self.particles[:,self.WEIGHT]
+        X = time.time() - self.particles.ref[:,self.WEIGHT]
         new_weight[np.logical_not(zeros)] = slope*(X[np.logical_not(zeros)] + 1)
 
         return new_weight/np.max(new_weight)
@@ -222,7 +239,27 @@ class Mapper(pf.ParticleFilter):
         self.map_timer = threading.Timer(self.options["publish_interval"], self.publish)
         self.map_timer.start()
         
-        self.map_pub.publish(self.make_cloud(self.particles))
+        # publish particles
+        self.map_pub.publish(self.make_cloud(self.particles.ref))
+
+        # publish bricks
+        points = []
+        for coords, is_brick in self.particles.bricks.items():
+            if is_brick == True:
+                points.append(coords)
+
+        pc = PointCloud()
+        pc.header.stamp = rospy.get_rostime()
+        pc.header.frame_id = "base_link"
+        pc.points = [Point32() for i in range(len(points))]
+        pc.channels = [ChannelFloat32(), ChannelFloat32()]
+
+        for i, particle in enumerate(points):
+            pc.points[i].x = particle[self.X]
+            pc.points[i].y = particle[self.Y]
+            pc.points[i].z = 0
+
+        self.brick_pub.publish(pc)
 
 
 if __name__ == "__main__":
@@ -232,8 +269,9 @@ if __name__ == "__main__":
             "publish_interval": 1e6,
             "resample_interval": 1e6,
             "reset_weight_on_resample": False,
-            "num_particles": 3000, #800
-            "resample_noise_count": 0
+            "num_particles": 200, #800
+            "resample_noise_count": 0,
+            "brick_threshold": 5
         })
     map = Mapper(options)
     map.start()

@@ -18,6 +18,8 @@ import rospy
 import gc
 import copy
 from functools import wraps
+from typing import List, Dict
+from numpy.typing import NDArray
 
 from sensor_msgs.msg import PointCloud, ChannelFloat32
 from geometry_msgs.msg import Point32
@@ -138,11 +140,147 @@ class FilterOptions:
             "use_timers": True,
             "resample_noise_count": 3,
             "reset_weight_on_resample": True,
-            "initial_weight": 1
+            "initial_weight": 1,
+            "brick_threshold": 30
         }
 
         # override with user preferences
         self.options.update(options)
+
+
+class Particles:
+
+    def __init__(self, n, brick_threshold=5, ref=None):
+        self.n = n
+        self.brick_threshold = brick_threshold
+
+        # build ref array
+        if type(ref) == type(None):
+            particles_xy: NDArray[float] = UniformDistribution2D((-10,10),(-10,10)).draw(n)    
+            particles_angle: NDArray[float] = np.random.uniform(-180,180,n)
+            weight: NDArray[float] = np.ones(n)
+
+            self.ref: NDArray[float] = np.hstack((particles_xy, particles_angle[:,np.newaxis], weight[:,np.newaxis]))
+        else:
+            self.ref = ref.copy()
+            #self.ref = copy.deepcopy(ref)
+
+        # build weight array
+        self.regenerate_weight()
+
+        # build hashtables
+        self.regenerate_hash(drop_bricks=True)
+
+        # build extra data array
+        self.data: NDArray[dict] = np.array([{} for i in range(n)])
+
+    def regenerate_hash(self, drop_bricks=False) -> None:
+        self._hash: Dict[Tuple[float],List[List]] = {}
+        if drop_bricks == True:
+            self.bricks: Dict[Tuple[float],bool] = {}
+        self.add_to_hash(self.ref, drop_bricks=False)
+
+    def add_to_hash(self, particles, drop_bricks=False) -> None:
+
+        # build coordinate hashtable
+        #x, y = np.meshgrid(np.linspace(-50, 50, 101), np.linspace(-50, 50, 101))
+        #coords = zip(x.flat, y.flat)
+       # = {(x/5,y/5):[] for x,y in coords}
+        keys: List[Tuple[float]] = []
+        for i,coords in enumerate(zip(particles[:,0], particles[:,1])):
+            x,y = list(coords)
+            rounded_x = np.floor(x*5)/5
+            rounded_y = np.floor(y*5)/5
+            key: Tuple[float] = (rounded_x, rounded_y)
+            if key in self._hash:
+                self._hash[key].extend([i])
+            else:
+                self._hash[key] = [i]
+            keys.append(key)
+
+        # build brick hashtable
+        for coords in keys:
+            if len(self._hash[coords]) > self.brick_threshold:
+                self.bricks[coords] = True
+            elif drop_bricks == True:
+                self.bricks[coords] = False
+
+    def regenerate_weight(self) -> None:
+        self.by_weight = False
+        self.by_index = True
+        self._sortable: NDArray[float] = np.hstack((np.arange(len(self.ref))[:,np.newaxis], self.ref[:,3:4]))
+
+    def get_inds(self, key: tuple) -> List:
+        x,y = key
+        rounded_x: float = np.floor(x*5)/5
+        rounded_y: float = np.floor(y*5)/5
+        key: Tuple[float] = (rounded_x, rounded_y)
+
+        if key not in self._hash:
+            return []
+        else:
+            return self._hash[key]
+
+    def is_brick(self, key: tuple) -> bool:
+        x,y = list(key)
+        rounded_x: float = np.floor(x*5)/5
+        rounded_y: float = np.floor(y*5)/5
+        key: Tuple[float] = (rounded_x, rounded_y)
+
+        if key not in self.bricks:
+            return False
+        else:
+            return self.bricks[key]        
+
+    def sort_weight(self) -> None:
+        self.by_weight = True
+        self.by_index = False
+        i = np.argsort(self._sortable[:,1])
+        self._sortable = self._sortable[i,:]
+
+    def sort_index(self) -> None:
+        self.by_weight = False
+        self.by_index = True
+        self.regenerate_weight()
+
+    def update_weight(self, new_weights) -> None:
+        self.by_weight = False
+        self.by_index = True
+        self._sortable: NDArray[float] = np.hstack((np.arange(len(self.ref))[:,np.newaxis], new_weights))
+
+    def add(self, new_particles) -> None:
+        self.ref = np.vstack([self.ref, new_particles])
+        self.add_to_hash(new_particles)
+
+    '''
+    def __deepcopy__(self, memo):
+        particles = Particles(n, brick_threshold, self.ref)
+        memo[id(self)] = particles
+
+        particles.bricks = copy.deepcopy(self.bricks)
+        memo[id(self.bricks)] = particles.bricks
+
+        particles.data = np.array([{}]*np.shape(self.data)[0])
+        for i in range(len(self.data)):
+            particles.data[i] = copy.deepcopy(self.data[i], memo)
+        memo[id(self.data)] = particles.data
+
+        return particles
+    '''
+
+    def fastcopy(self):
+        particles = Particles(self.n, self.brick_threshold, self.ref)
+
+        particles.bricks = {}
+        for key, value in self.bricks.items():
+            particles.bricks[key] = value.copy()
+
+        particles.data = np.array([{} for i in range(len(self.data))])
+        for i in range(len(self.data)):
+            for key, value in self.data[i].items():
+                particles.data[i][key] = value.fastcopy()
+
+        return particles
 
 
 class ParticleFilter:
@@ -162,7 +300,7 @@ class ParticleFilter:
     ANGLE = 2
     WEIGHT = 3
 
-    def __init__(self, options=FilterOptions()):
+    def __init__(self, input_options=FilterOptions()):
         """Constructor for ParticleFilter objects
         
         Args:
@@ -173,7 +311,7 @@ class ParticleFilter:
 
         """
         # store arguments
-        self.options = options.options
+        self.options = input_options.options
 
         # validate arguments
         if self.options["num_particles"] <= 0 or self.options["num_particles"] != int(self.options["num_particles"]):
@@ -189,8 +327,9 @@ class ParticleFilter:
         #gc.set_threshold(1000,5)
 
         # initialize particle list
-        self.particles = self.init_particles(self.options["num_particles"])
-        self.particle_data = np.array([{} for i in range(self.options["num_particles"])])
+        #self.particles = self.init_particles(self.options["num_particles"])
+        #self.particle_data = np.array([{} for i in range(self.options["num_particles"])])
+        self.particles = Particles(self.options["num_particles"], self.options["brick_threshold"])
         self.locked = False
 
         # initiate resampling process
@@ -201,31 +340,6 @@ class ParticleFilter:
 
         #self.resize_timer = threading.Timer(0, self.resize)
 
-    def init_particles(self, n):
-        """Returns particles in null distribution
-
-        Args:
-            n: number of particles to generate
-
-        Returns:
-            List of n particles
-
-        """
-        if n < 1:
-            return []
-        else:
-            if self.options["initial_linear_dist"] is not None:
-                particles_xy = self.options["initial_linear_dist"].draw(n)
-            else:
-                particles_xy = self.options["null_linear_dist"].draw(n)
-
-            if self.options["initial_angular_dist"] is not None:
-                particles_angle = self.options["initial_angular_dist"](n)
-            else:
-                particles_angle = self.options["null_angular_dist"](n)
-
-            particles_weight = np.ones(n)*self.options["initial_weight"]
-            return np.hstack((particles_xy, particles_angle[:,np.newaxis], particles_weight[:,np.newaxis]))
 
     '''
     def reset_resample_timer(self, interval=None):
@@ -270,6 +384,7 @@ class ParticleFilter:
         def decorator(fn):
             @wraps(fn)
             def wrapper(*args, **kwargs):
+                rospy.logwarn(f"{timer_name} attempting")
                 self = args[0]
 
                 if timer_name is not None:
@@ -296,7 +411,10 @@ class ParticleFilter:
                             exec(f"self.{timer_name} = threading.Timer({long_timeout}, self.{calling_fn})")
                             exec(f"self.{timer_name}.start()")
 
+                        rospy.logwarn(f"{timer_name} running")
+                        now = time.time()
                         output = fn(self, *args, **kwargs)
+                        rospy.logwarn(f"{timer_name} complete in {time.time()-now} seconds")
 
                     except:
                         traceback.print_exc()
@@ -322,16 +440,24 @@ class ParticleFilter:
         @ParticleFilter.locking("resample", timer_name=timer_name, long_timeout=self.options["resample_interval"], ignore_lock=ignore_lock)
         def inner_resample(self, *args, **kwargs):
 
+            rospy.logerr("starting resample")
+            now = time.time()
+
             weights = self.reweight()
             assert np.sum(weights) > 0, "Weights must be positive."
 
-            current_num_particles = np.shape(self.particles)[0]
+            current_num_particles = np.shape(self.particles.ref)[0]
 
             cumulative_importance = 0
             importance_cdf = np.zeros(current_num_particles, dtype=float)
             for i in range(current_num_particles):
-                cumulative_importance += weights[i]
+                coords = (self.particles.ref[i,0], self.particles.ref[i,1])
+                if self.particles.is_brick(coords) == False:
+                    cumulative_importance += weights[i]
                 importance_cdf[i] = cumulative_importance
+
+            rospy.logerr(f"did importance weight in {time.time() - now} secs")
+            now = time.time()
 
             # draw requested number of particles from this filter's learned distribution
             num_from_filter_dist = self.options["num_particles"] - self.options["resample_noise_count"]
@@ -341,16 +467,21 @@ class ParticleFilter:
                 selection = np.random.uniform(0,importance_cdf[-1])
                 new_particle_inds[i] = np.searchsorted(importance_cdf, selection)
                 
-            particles_slice = self.particles[new_particle_inds,:]
-            self.particles = copy.deepcopy(particles_slice)
-            
-            particle_data_slice = self.particle_data[new_particle_inds]
-            self.particle_data = np.array([{} for i in range(len(particle_data_slice))])
-            for i in range(len(particle_data_slice)):
-                self.particle_data[i] = copy.deepcopy(particle_data_slice[i])
-            
+            rospy.logerr(f"did selection in {time.time() - now} secs")
+            now = time.time()            
+
+            self.particles.ref = self.particles.ref[new_particle_inds,:]
+            self.particles = self.particles.fastcopy()
+
+            rospy.logerr(f"did particle and data copy in {time.time() - now} secs")
+            now = time.time() 
+
             if self.options["reset_weight_on_resample"] == True:
-                self.particles[:,self.WEIGHT] = self.options["initial_weight"]
+                self.particles.update_weight(np.tile(self.options["initial_weight"], (len(self.particles.ref),1)))
+
+            rospy.logerr(f"did weight copy in {time.time() - now} secs, done")
+            now = time.time()
+
 
             #rospy.loginfo(len(self.particles))
 
@@ -362,8 +493,10 @@ class ParticleFilter:
                 null_data = np.array([{} for i in range(self.options["resample_noise_count"])])
 
                 null_particles = np.hstack((null_xy, np.reshape(null_angle, [-1,1]), null_weight))
-                self.particles = np.vstack((copy.deepcopy(self.particles), null_particles))
-                self.particle_data = np.hstack((copy.deepcopy(self.particle_data), null_data))
+                self.particles.ref = np.vstack((self.particles.ref, null_particles))
+                self.particles.data = np.hstack((self.particles.data, null_data))# USED TO DEEP COPY
+                self.particles.regenerate_weight()
+                self.particles.regenerate_hash(drop_bricks = False)
 
             #rospy.loginfo(len(self.particles))
 
@@ -373,7 +506,7 @@ class ParticleFilter:
 
     def reweight(self):
         # override to adjust weights before resampling
-        return self.particles[:,self.WEIGHT]
+        return self.particles.ref[:,self.WEIGHT]
 
     #not supported because it would require passing locks which is not currently supported
     #@ParticleFilter.locking("resize", timer_name="resize_timer")
@@ -405,9 +538,9 @@ class ParticleFilter:
         Transforms point (x,y,angle) into the reference frame of each of the particles.
         '''
 
-        tf_particles = np.empty([len(self.particles), 4])
-        for i in len(self.particles):
-            tf_particles[i] = transform_one(point, self.particles[i])
+        tf_particles = np.empty([len(self.particles.ref), 4])
+        for i in len(self.particles.ref):
+            tf_particles[i] = transform_one(point, self.particles.ref[i,:])
 
         return tf_particles
 
@@ -438,18 +571,18 @@ class ParticleFilter:
         except:
             pass
 
-    def __deepcopy__(self, memo):
+    def fastcopy(self):
         
         pf = ParticleFilter(FilterOptions(self.options))
-        memo[id(self)] = pf
-        
-        pf.particles = copy.deepcopy(self.particles, memo)
+        pf.particles = self.particles.fastcopy()
 
+        '''
         pf.particle_data = np.array([{} for i in range(len(self.particle_data))])
         memo[id(self.particle_data)] = pf.particle_data
         for i in range(len(pf.particle_data)):
             pf.particle_data[i] = copy.deepcopy(self.particle_data[i], memo)
-        
+        '''
+
         return pf
 
     def decloud(cloud):
@@ -462,10 +595,11 @@ class ParticleFilter:
 
 if __name__ == "__main__":
     print("Starting unit tests for slam.py")
-    test_filter_1 = ParticleFilter()
-    print("first 10 particles: " + str(test_filter_1.particles[1:10,:]))
+    options = FilterOptions({"brick_threshold":30, "initial_linear_dist":None, "resample_interval":.1})
+    test_filter_1 = ParticleFilter(options)
+    print("first 10 particles: " + str(test_filter_1.particles.ref[0:10,:]))
     time.sleep(5)
-    print("first 10 particles: " + str(test_filter_1.particles[1:10,:]))
+    print("first 10 particles: " + str(test_filter_1.particles.ref[0:10,:]))
     time.sleep(5)
-    print("first 10 particles: " + str(test_filter_1.particles[1:10,:]))
+    print("first 10 particles: " + str(test_filter_1.particles.ref[0:10,:]))
     test_filter_1.close()

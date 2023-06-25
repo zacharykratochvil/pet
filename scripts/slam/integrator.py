@@ -275,7 +275,7 @@ class Integrator:
         '''
         set weight 0 for old data
         '''
-        seconds_ago = 1.5
+        seconds_ago = 2
         cutoff = time.time() - seconds_ago
         for i in range(self.velocity_filter_size):
             if self.velocity_filter[i,6] < cutoff:
@@ -372,7 +372,7 @@ class Integrator:
                 #self.latest_twist["linear_vel"]
         #    ),0,ddof=1)*delta_time**2
         self.pos_variance["linear_pos"] += linear_variance*delta_time**2
-        self.pos_variance["angular_pos"] += np.array((.5,.5,.5))*delta_time**2 #np.array((.05,.05,.05))*delta_time**2
+        self.pos_variance["angular_pos"] += np.array((.2,.2,.2))*delta_time**2 #np.array((.05,.05,.05))*delta_time**2
 
         '''np.var((
             self.prev_odo["angular_vel"],

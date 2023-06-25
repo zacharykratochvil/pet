@@ -62,19 +62,30 @@ class RobotLocalizer(pf.ParticleFilter):
 
         """
         options.options["initial_linear_dist"] = pf.UniformDistribution2D((-.1,.1),(-.1,.1))
+        options.options["brick_threshold"] = 1e6
         super().__init__(options)
 
         self.inner_options = pf.FilterOptions({"initial_linear_dist":pf.UniformDistribution2D((-10,10),(-10,10)),
                                                   "resample_interval":1e6,
                                                   "use_timers": False,
-                                                  "num_particles":50,
-                                                  "resample_noise_count":np.nan
+                                                  "num_particles":30,
+                                                  "resample_noise_count":np.nan,
+                                                  "brick_threshold": 1e6
                                                   })
         #self.measure_timers = []
-        for i in range(len(self.particles)):
-            self.particle_data[i]["map"] = pf.ParticleFilter(self.inner_options)
+        for i in range(len(self.particles.ref)):
+            self.particles.data[i]["map"] = pf.ParticleFilter(self.inner_options)
+            '''
+            def temp(self):
+                indecies = list(range(np.shape(self.particles.ref)[0]))
+                inds_to_keep = random.sample(indecies, k=self.particles.data[i]["map"].options["num_particles"])
+                self.particles.ref = self.particles.ref[inds_to_keep,:]
+                self.particles.data = self.particles.data[inds_to_keep]
+                self.particles.regenerate_hash()
+            self.particles.data[i]["map"].resample = temp
+            '''
             #self.measure_timers.append(threading.Timer(1e6,None))
-            #rospy.loginfo(self.particle_data[i]["map"].particles[:,0:2])
+            #rospy.loginfo(self.particles.data[i]["map"].particles[:,0:2])
         
 
         self.integrator = Integrator()
@@ -125,8 +136,8 @@ class RobotLocalizer(pf.ParticleFilter):
         self.location_timer.start()
 
         self.publish_particles()
-        rospy.loginfo(self.particle_data[0]["map"].particles[:,0:2])
-        rospy.loginfo(self.particle_data[1]["map"].particles[:,0:2])
+        rospy.loginfo(self.particles.data[0]["map"].particles.ref[:,0:2])
+        rospy.loginfo(self.particles.data[1]["map"].particles.ref[:,0:2])
 
         rospy.spin()
 
@@ -141,12 +152,12 @@ class RobotLocalizer(pf.ParticleFilter):
 
         # update local map particle filters' resample properties
         # disabled because resize is not supported
-        #if config["local_map_particles"] != self.particle_data[0]["map"].options["num_particles"]:
+        #if config["local_map_particles"] != self.particles.data[0]["map"].options["num_particles"]:
         #    for i in range(self.options["num_particles"]):
-        #        self.particle_data[i]["map"].resize(config["local_map_particles"])
-        if config["local_map_noise_count"] != self.particle_data[0]["map"].options["resample_noise_count"]:
+        #        self.particles.data[i]["map"].resize(config["local_map_particles"])
+        if config["local_map_noise_count"] != self.particles.data[0]["map"].options["resample_noise_count"]:
             for i in range(self.options["num_particles"]):
-                self.particle_data[i]["map"].options["resample_noise_count"] = config["local_map_noise_count"]
+                self.particles.data[i]["map"].options["resample_noise_count"] = config["local_map_noise_count"]
 
         # update timers
         if self.options["move_interval"] != config["move_interval"]:
@@ -185,23 +196,32 @@ class RobotLocalizer(pf.ParticleFilter):
         def inner_resample(self, *args, **kwargs):
             super().resample(ignore_lock=True)
 
-            for i in range(len(self.particles)):#-self.options["resample_noise_count"], len(self.particles)):
-                #self.particle_data[i]["map"].close()
-                #self.particle_data[i]["map"] = pf.ParticleFilter(self.inner_options)
-                if "map" in self.particle_data[i].keys():
-                    self.particle_data[i]["map"].particles = self.particle_data[i]["map"].init_particles(self.inner_options.options["num_particles"])
+            for i in range(len(self.particles.ref)):#-self.options["resample_noise_count"], len(self.particles)):
+                #self.particles.data[i]["map"].close()
+                #self.particles.data[i]["map"] = pf.ParticleFilter(self.inner_options)
+                if "map" in self.particles.data[i].keys():
+                    self.particles.data[i]["map"].particles = pf.Particles(self.options["num_particles"], self.options["brick_threshold"])
                 else:
-                    self.particle_data[i]["map"] = pf.ParticleFilter(self.inner_options)
+                    self.particles.data[i]["map"] = pf.ParticleFilter(self.inner_options)
+                    '''
+                    def temp(self):
+                        indecies = list(range(np.shape(self.particles.ref)[0]))
+                        inds_to_keep = random.sample(indecies, k=self.particles.data[i]["map"].options["num_particles"])
+                        self.particles.ref = self.particles.ref[inds_to_keep,:]
+                        self.particles.data = self.particles.data[inds_to_keep]
+                        self.particles.regenerate_hash()
+                    self.particles.data[i]["map"].resample = temp
+                    '''
 
-            for i in range(len(self.particles)):
-                #rospy.loginfo(self.particle_data[i]["map"].particles[0])
+            for i in range(len(self.particles.ref)):
+                #rospy.loginfo(self.particles.data[i]["map"].particles[0])
                 if i > 0:
-                    pass#rospy.logerr(f'resample particles: {self.particle_data[i]["map"].particles is self.particle_data[i-1]["map"].particles}')
+                    pass#rospy.logerr(f'resample particles: {self.particles.data[i]["map"].particles is self.particles.data[i-1]["map"].particles}')
 
-            for i in range(len(self.particles)):
-                #rospy.loginfo(self.particle_data[i]["map"].particles[0])
+            for i in range(len(self.particles.ref)):
+                #rospy.loginfo(self.particles.data[i]["map"].particles[0])
                 if i > 0:
-                    pass#rospy.logerr(f'resample dict: {self.particle_data[i] is self.particle_data[i-1]}')
+                    pass#rospy.logerr(f'resample dict: {self.particles.data[i] is self.particles.data[i-1]}')
 
         start = time.time()
         inner_resample(self)
@@ -240,8 +260,10 @@ class RobotLocalizer(pf.ParticleFilter):
             # apply deltas to particles
             weights = np.zeros([self.options["num_particles"],1])
             particle_deltas = np.hstack([lin_errors[:,0:2], np.reshape(ang_errors,[-1,1]), weights])
-            self.particles += particle_deltas
-            self.particles[:,self.ANGLE] = ((self.particles[:,self.ANGLE] + 180) % 360) - 180
+            self.particles.ref += particle_deltas
+            self.particles.ref[:,self.ANGLE] = ((self.particles.ref[:,self.ANGLE] + 180) % 360) - 180
+            self.particles.regenerate_hash()
+            self.particles.regenerate_weight()
 
             self.publish_particles()
         
@@ -289,43 +311,41 @@ class RobotLocalizer(pf.ParticleFilter):
 
             # update a random subset of local maps with a random subset of measured particles
             
-            for i in random.sample(range(len(self.particles)), int(np.ceil(len(self.particles)/self.options["local_map_update_subset_factor"]))):
+            for i in random.sample(range(len(self.particles.ref)), int(np.ceil(len(self.particles.ref)/self.options["local_map_update_subset_factor"]))):
                 
                 num_measureds_to_sample = len(measured_particles) #int(np.ceil(len(measured_particles)/3))
                 added_particles = np.empty([num_measureds_to_sample, 4])   
                 added_i = 0
 
                 for measured_i in random.sample(range(len(measured_particles)), num_measureds_to_sample):
-                    added_particles[added_i,:] = (self.transform_one(measured_particles[measured_i,:], self.particles[i]))
+                    added_particles[added_i,:] = (self.transform_one(measured_particles[measured_i,:], self.particles.ref[i]))
                     added_i += 1
 
                 #rospy.logerr(added_particles[0])
 
-                if np.any(np.isnan(added_particles)):
-                    rospy.logerr("added particles is nan")
-                if np.any(np.isnan(self.particle_data[i]["map"].particles)):
-                    rospy.logerr(f"particle {i} has nan in it's map")
-                all_particles = np.vstack([copy.deepcopy(self.particle_data[i]["map"].particles), added_particles])
-                self.particle_data[i]["map"].particles = all_particles
-                self.particle_data[i]["map"].particle_data = np.array([{} for i in range(len(self.particle_data[i]["map"].particles))])
-                #rospy.logerr(len(self.particle_data[i]["map"].particles))
+                all_particles = np.vstack([copy.deepcopy(self.particles.data[i]["map"].particles.ref), added_particles])
+                self.particles.data[i]["map"].particles.ref = all_particles
+                self.particles.data[i]["map"].particles.data = np.array([{} for i in range(np.shape(self.particles.data[i]["map"].particles.ref)[0])])
+                self.particles.data[i]["map"].particles.regenerate_weight()
+                self.particles.data[i]["map"].particles.regenerate_hash()
+                #rospy.logerr(len(self.particles.data[i]["map"].particles))
                
                 '''
-                @pf.ParticleFilter.locking(f"particle_data[{i}]['map'].resample", timer_name=f"measure_timers[{i}]", short_timeout=.01, long_timeout=.01)
+                @pf.ParticleFilter.locking(f"particles.data[{i}]['map'].resample", timer_name=f"measure_timers[{i}]", short_timeout=.01, long_timeout=.01)
                 def measure_resample(self, *args, **kwargs):
-                    return self.particle_data[i]["map"].resample()
+                    return self.particles.data[i]["map"].resample()
                 measure_resample(self)
                 '''
                 
                 #rospy.logerr(f"particle {added_particles[0,:]}")
-                self.particle_data[i]["map"].resample()
-                if ("map" in self.particle_data[i].keys()) == False:
-                    self.particle_data[i]["map"] = pf.ParticleFilter(self.inner_options)
+                self.particles.data[i]["map"].resample()
+                if ("map" in self.particles.data[i].keys()) == False:
+                    self.particles.data[i]["map"] = pf.ParticleFilter(self.inner_options)
 
-            for i in range(len(self.particles)):
-                #rospy.loginfo(self.particle_data[i]["map"].particles[0])
+            for i in range(np.shape(self.particles.ref)[0]):
+                #rospy.loginfo(self.particles.data[i]["map"].particles[0])
                 if i > 0:
-                    pass#rospy.logerr(f'measure: {self.particle_data[i]["map"].particles is self.particle_data[i-1]["map"].particles}')
+                    pass#rospy.logerr(f'measure: {self.particles.data[i]["map"].particles is self.particles.data[i-1]["map"].particles}')
             
             return True
 
@@ -357,6 +377,8 @@ class RobotLocalizer(pf.ParticleFilter):
 
 
             # compare to map, score
+            self.latest_map_particles = pf.Particles(self.options["num_particles"], self.options["brick_threshold"], ref=self.latest_map)
+            '''
             num_neighbors = 10
             nn_tree = skln.NearestNeighbors(n_neighbors = num_neighbors, algorithm = "kd_tree",
                                                 leaf_size = 10, n_jobs = 1)
@@ -366,32 +388,34 @@ class RobotLocalizer(pf.ParticleFilter):
             nn_tree.fit(self.latest_map[:,0:2])
 
             #for i in range(self.options["num_particles"]):
-            #    rospy.logerr(self.particle_data[i]["map"].particles[0])
-
+            #    rospy.logerr(self.particles.data[i]["map"].particles[0])
+            '''
             
             #avg_distances = []
             norm_neighbors = []
-            for i in range(self.options["num_particles"]):
-                particle_copy = self.particle_data[i]["map"].particles#copy.deepcopy(self.particle_data[i]["map"].particles)
-                #self.particle_data[i]["map"].particles = self.particle_data[i]["map"].init_particles(self.inner_options.options["num_particles"])
-                if np.any(np.isnan(particle_copy)):
-                    rospy.logerr(f"particle {i} has nan in it's map")
-                neighbors = nn_tree.radius_neighbors(particle_copy[:,0:2], radius=.2, return_distance=False)
-                #rospy.loginfo(self.particle_data[i]["map"].particles[:,0:2])
+            for i in range(np.shape(self.particles.ref)[0]):
+                local_particle_coords = self.particles.data[i]["map"].particles.ref[:,0:2]
+                num_radius_neighbors = 0
+                rospy.logerr(np.shape(local_particle_coords)[0])
+                for i in range(np.shape(local_particle_coords)[0]):
+                    pass
+                    #num_radius_neighbors += len(self.latest_map_particles.get_inds(local_particle_coords[i,:]))
+                    #num_radius_neighbors += self.latest_map_particles.brick_threshold*self.latest_map_particles.is_brick(local_particle_coords[i,:])
+
+                #rospy.loginfo(self.particles.data[i]["map"].particles[:,0:2])
                 #distances = neighbors.flatten()
                 #distances.sort()
                 #distance = np.mean(distances)#[:int(len(distances)*.2)])
-                num_radius_neighbors = 0
-                for neighbor_i in range(len(neighbors)):
-                    num_radius_neighbors += len(neighbors[neighbor_i])
+                
                 #normalize by number of particles searched
-                norm_neighbors_one = (num_radius_neighbors)/np.shape(particle_copy)[0]
+                rospy.logerr("after the for loop")
+                norm_neighbors_one = (num_radius_neighbors)/np.shape(local_particle_coords)[0]
                 #don't add extra weight for extremely dense regions
                 max_density = 15
                 norm_neighbors_one = min(max_density, norm_neighbors_one)
                 norm_neighbors.append(norm_neighbors_one)
                 #avg_distances.append(distance)
-                rospy.loginfo(f"reweight distance: {norm_neighbors[-1]}")
+                rospy.logerr(f"reweight distance: {norm_neighbors[-1]}")
 
             min_dist = np.min(norm_neighbors)
             max_dist = np.max(norm_neighbors)
@@ -403,7 +427,7 @@ class RobotLocalizer(pf.ParticleFilter):
 
                 map_weight = (norm_neighbors[i] - min_dist)/(max_dist - min_dist)
                 odo_z_orientation = self.integrator.get_orientation()[2]
-                particle_z_orientation = self.particles[i,self.ANGLE]
+                particle_z_orientation = self.particles.ref[i,self.ANGLE]
                 odo_weight = 1-np.abs((((odo_z_orientation - particle_z_orientation) + 540) % 360) - 180)/180
                 weight = map_weight*odo_weight
                 #rospy.logerr(f"magnetic: {odo_z_orientation}; filter: {particle_z_orientation}")
@@ -412,23 +436,25 @@ class RobotLocalizer(pf.ParticleFilter):
                     weight = 0
                 elif weight < 0:
                     weight = 0
-                self.particles[i,self.WEIGHT] = weight
+                self.particles.ref[i,self.WEIGHT] = weight
 
-                particle_copy = self.particle_data[i]["map"].particles
+                particle_copy = self.particles.data[i]["map"].particles.ref
                 new_local_particles = np.empty([np.shape(particle_copy)[0], 4])
                 new_local_particles[:,0:2] = particle_copy[:,0:2]
                 new_local_particles[:,self.ANGLE] = 0
                 new_local_particles[:,self.WEIGHT] = weight
                 local_particles.append(new_local_particles)
+                #self.particles.data[i]["map"].particles = pf.Particles(ref=new_local_particles)
 
+            self.particles.regenerate_weight()
             local_particles = np.vstack(local_particles)
             pc = self.make_cloud(local_particles)
             self.local_particle_pub.publish(pc)
 
-            for i in range(len(self.particles)):
-                #rospy.loginfo(self.particle_data[i]["map"].particles[0])
-                if i > 0:
-                    pass#rospy.logerr(f'weight: {self.particle_data[i]["map"].particles is self.particle_data[i-1]["map"].particles}')
+            #for i in range(len(self.particles)):
+                #rospy.loginfo(self.particles.data[i]["map"].particles[0])
+             #   if i > 0:
+             #       pass#rospy.logerr(f'weight: {self.particles.data[i]["map"].particles is self.particles.data[i-1]["map"].particles}')
 
             self.publish_particles()
             self.resample(ignore_lock=True)
@@ -446,7 +472,7 @@ class RobotLocalizer(pf.ParticleFilter):
         self.particle_timer = threading.Timer(self.options["publish_interval"], self.publish_particles)
         self.particle_timer.start()
 
-        pc = self.make_cloud(self.particles)
+        pc = self.make_cloud(self.particles.ref)
         self.particle_pub.publish(pc)
 
     def publish_location(self):
@@ -480,7 +506,23 @@ class RobotLocalizer(pf.ParticleFilter):
         #ms = sklc.MeanShift(bandwidth=bandwidth, bin_seeding=True, n_jobs=1, max_iter=20) #seeds=seeds
         #ms.fit(self.particles[:,:2])
         
-        clustered_points = vf.meanshift_plus(self.particles[:,:2],1,.1,5)
+        cluster_center = vf.kernel_cluster_extreme(self.particles)
+        
+        cluster_particle_inds = self.particles.get_inds(cluster_center[0,:])
+        cluster_particles = self.particles.ref[cluster_particle_inds,:]
+
+        candidate = LocationCandidate()
+        candidate.position.x = cluster_center[0,0]
+        candidate.position.y = cluster_center[0,1]
+        candidate.position.z = 0
+        candidate.orientation.x = 0
+        candidate.orientation.y = 0
+        candidate.orientation.z = vf.angle_mean(cluster_particles[:,self.ANGLE])
+        candidate.confidence = 1
+        candidate.spread = np.mean(np.var(cluster_particles[:,0:2], axis=0))
+        candidates.append(candidate)
+
+        '''
         values, counts = np.unique(clustered_points, return_counts=True, axis=0)
         sorted_inds = np.argsort(counts) #ascending
 
@@ -488,9 +530,9 @@ class RobotLocalizer(pf.ParticleFilter):
         
         for i in np.flip(sorted_inds):
             is_this_cluster = np.all(clustered_points == np.tile(values[i,:],(np.shape(clustered_points)[0], 1)), axis=1)#ms.labels_ == values[i]            
-            cluster_orientations = self.particles[is_this_cluster,2]
-            confidence = np.sum(is_this_cluster)/np.shape(self.particles)[0]
-            spread = np.mean([np.var(self.particles[is_this_cluster,0]), np.var(self.particles[is_this_cluster,1])])
+            cluster_orientations = self.particles.ref[is_this_cluster,2]
+            confidence = np.sum(is_this_cluster)/np.shape(self.particles.ref)[0]
+            spread = np.mean([np.var(self.particles.ref[is_this_cluster,0]), np.var(self.particles.ref[is_this_cluster,1])])
     
             candidate = LocationCandidate()
             candidate.position.x = values[i,0]
@@ -505,6 +547,7 @@ class RobotLocalizer(pf.ParticleFilter):
         #except ValueError as e:
         #    rospy.logerr(f"shape: {np.shape(self.particles)}")
         #    rospy.logerr(f"nan/inf: {np.any(np.isnan(self.particles))}")
+        '''
 
         msg = Localization()
         msg.candidates = candidates
