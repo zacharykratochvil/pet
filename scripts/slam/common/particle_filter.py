@@ -150,15 +150,15 @@ class FilterOptions:
 
 class Particles:
 
-    def __init__(self, n, brick_threshold=5, ref=None):
-        self.n = n
-        self.brick_threshold = brick_threshold
+    def __init__(self, options=FilterOptions(), ref=None):
+        self.options = options.options
+        self.n = self.options["num_particles"]
 
         # build ref array
         if type(ref) == type(None):
-            particles_xy: NDArray[float] = UniformDistribution2D((-10,10),(-10,10)).draw(n)    
-            particles_angle: NDArray[float] = np.random.uniform(-180,180,n)
-            weight: NDArray[float] = np.ones(n)
+            particles_xy: NDArray[float] = self.options["initial_linear_dist"].draw(self.n)
+            particles_angle: NDArray[float] = self.options["initial_angular_dist"](self.n)
+            weight: NDArray[float] = np.ones(self.n)*self.options["initial_weight"]
 
             self.ref: NDArray[float] = np.hstack((particles_xy, particles_angle[:,np.newaxis], weight[:,np.newaxis]))
         else:
@@ -172,7 +172,7 @@ class Particles:
         self.regenerate_hash(drop_bricks=True)
 
         # build extra data array
-        self.data: NDArray[dict] = np.array([{} for i in range(n)])
+        self.data: NDArray[dict] = np.array([{} for i in range(self.n)])
 
     def regenerate_hash(self, drop_bricks=False) -> None:
         self._hash: Dict[Tuple[float],List[List]] = {}
@@ -200,7 +200,7 @@ class Particles:
 
         # build brick hashtable
         for coords in keys:
-            if len(self._hash[coords]) > self.brick_threshold:
+            if len(self._hash[coords]) > self.options["brick_threshold"]:
                 self.bricks[coords] = True
             elif drop_bricks == True:
                 self.bricks[coords] = False
@@ -230,7 +230,16 @@ class Particles:
         if key not in self.bricks:
             return False
         else:
-            return self.bricks[key]        
+            return self.bricks[key]   
+
+    def delete_brick(self, key: tuple) -> None:
+        x,y = list(key)
+        rounded_x: float = np.floor(x*5)/5
+        rounded_y: float = np.floor(y*5)/5
+        key: Tuple[float] = (rounded_x, rounded_y)
+
+        if key in self.bricks:
+            self.bricks[key] = False
 
     def sort_weight(self) -> None:
         self.by_weight = True
@@ -269,7 +278,7 @@ class Particles:
     '''
 
     def fastcopy(self):
-        particles = Particles(self.n, self.brick_threshold, self.ref)
+        particles = Particles(FilterOptions(self.options), self.ref)
 
         particles.bricks = {}
         for key, value in self.bricks.items():
@@ -329,7 +338,8 @@ class ParticleFilter:
         # initialize particle list
         #self.particles = self.init_particles(self.options["num_particles"])
         #self.particle_data = np.array([{} for i in range(self.options["num_particles"])])
-        self.particles = Particles(self.options["num_particles"], self.options["brick_threshold"])
+        options = FilterOptions({"num_particles":self.options["num_particles"], "brick_threshold":self.options["brick_threshold"]})
+        self.particles = Particles(options)
         self.locked = False
 
         # initiate resampling process
@@ -384,7 +394,7 @@ class ParticleFilter:
         def decorator(fn):
             @wraps(fn)
             def wrapper(*args, **kwargs):
-                rospy.logwarn(f"{timer_name} attempting")
+                #rospy.logwarn(f"{timer_name} attempting")
                 self = args[0]
 
                 if timer_name is not None:

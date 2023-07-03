@@ -83,8 +83,8 @@ class Integrator:
         self.twist_timer = threading.Timer(0, self._clear_twist)
 
         # integral update timer
-        #self.update_timer = threading.Timer(.1, self.update_pos_integral)
-        #self.update_timer.start()
+        self.update_timer = threading.Timer(.01, self.update_pos_integral)
+        self.update_timer.start()
 
 
     def update_distances(self, distances):
@@ -120,7 +120,7 @@ class Integrator:
         # update twists
         self.latest_twist["linear_vel"] = (
                 msg.velocity.linear.x,
-                msg.velocity.linear.y,
+                msg.velocity.linear.y/2,
                 msg.velocity.linear.z
             )
         self.latest_twist["angular_vel"] = (
@@ -132,32 +132,6 @@ class Integrator:
         # update integrals
         #self.update_velocity(self.latest_twist, weight=(10,10,10), stamp=time.time())
 
-    def on_vision(self, msg):
-        if type(self.latest_distances) == type(None):
-            rospy.loginfo("no distances stored, so optical flow tracking data discarded")
-            return
-        if np.abs(msg.linear.z) > 20: # robot cannot jump
-            return
-
-        self.prev_vision = copy.deepcopy(self.latest_vision)
-
-        z_angular_vel = self._calc_angular_vel()[2]
-        correction = np.pi/180*z_angular_vel*np.mean(self.latest_distances)
-        rospy.loginfo(f"raw: {msg.linear.x}")
-        rospy.loginfo(f"correction: {correction}")
-        x_vel = 0 #msg.linear.x - correction
-        rospy.loginfo(f"corrected: {x_vel}")
-        x_var = 0 #.1*correction
-        self.latest_vision["linear_vel"] = [x_vel, msg.linear.y, msg.linear.z]
-        for i in range(3):
-            if np.squeeze(np.abs(self.latest_vision["linear_vel"][i])) > self.VELOCITY_MAX:
-                self.latest_vision["linear_vel"][i] = np.sign(self.latest_vision["linear_vel"][i])*self.VELOCITY_MAX
-        
-        #self.latest_vision["linear_vel"] = self._smooth(self.prev_vision["linear_vel"], self.latest_vision["linear_vel"])
-
-        self.update_velocity(self.latest_vision, var=(x_var, 0, 0), weight=(10,10,10), stamp=time.time())
-        rospy.loginfo(f'updated velocity vision: {self.latest_vision}')
-
     def on_odo(self, msg):
         """Processes and integrates Imu messages.
 
@@ -168,11 +142,6 @@ class Integrator:
 
         # store previous and update latest
         self.prev_odo = copy.deepcopy(self.latest_odo)
-        self.latest_odo["linear_acc"] = (
-                -msg.linear_acceleration.x,
-                msg.linear_acceleration.y,
-                -msg.linear_acceleration.z,
-            )
         self.latest_odo["angular_vel"] = (
                 -msg.angular_velocity.x*180/np.pi,
                 msg.angular_velocity.y*180/np.pi,
@@ -198,129 +167,6 @@ class Integrator:
         if self.odo_counter >= self.odo_downsample_ratio:
             self.filter_odo()
 
-    def filter_odo(self):
-
-        # calculate correction of linear acceleration for gravity
-        stamp = np.mean(self.pre_filtered_timestamps)
-        delta_time = stamp - self.latest_store_stamp
-        _angular_integral = self.pos_integral["angular_pos"] + self._calc_angular_vel()*delta_time
-        _pos_integral = {
-                "angular_pos": _angular_integral
-            }
-
-        self.filtered_odo["linear_acc"] = np.mean(self.pre_filtered_odo["linear_acc"], 0)
-        self.filtered_odo["angular_vel"] = np.mean(self.pre_filtered_odo["angular_vel"], 0)
-
-
-        '''
-        g = -9.81 # m/s**2
-        if np.sum(np.abs(self.filtered_odo["angular_vel"])) == 0:
-            x_percent_g = max(-1.0,min(1.0,self.filtered_odo["linear_acc"][0]/g))
-            y_percent_g = max(-1.0,min(1.0,self.filtered_odo["linear_acc"][1]/g))
-            x = np.arcsin(y_percent_g)
-            y = -np.arcsin(x_percent_g)
-
-            self.pos_integral["angular_pos"] = (x, y, self.pos_integral["angular_pos"][2])
-            _pos_integral["angular_pos"] = self.pos_integral["angular_pos"]
-
-        g_x = -g*np.sin(_pos_integral["angular_pos"][1]/180*np.pi)
-        g_y = g*np.sin(_pos_integral["angular_pos"][0]/180*np.pi)
-        g_z = -np.sqrt(max(0, g**2 - g_x**2 - g_y**2))
-        g_correction = np.asarray((g_x, g_y, g_z))
-
-        self.prev_corr_linear_acc = copy.deepcopy(self.latest_corr_linear_acc)
-        if np.sum(np.abs(self.filtered_odo["angular_vel"])) == 0:
-            self.latest_corr_linear_acc = (0.0, 0.0, 0.0)
-            self.vel_integral_odo = {"linear_vel":(0.0, 0.0, 0.0)}
-        else:
-            self.latest_corr_linear_acc = self.filtered_odo["linear_acc"] - g_correction
-
-        # update acceleration integral
-        self.prev_store_stamp_odo = self.latest_store_stamp_odo
-        self.latest_store_stamp_odo = stamp #time.time()
-        delta_time = self.latest_store_stamp_odo - self.prev_store_stamp_odo
-
-        decay_constant = .95
-        prev_vel_integral_odo = copy.deepcopy(self.vel_integral_odo)
-        self.vel_integral_odo["linear_vel"] += np.mean((
-                self.prev_corr_linear_acc,
-                self.latest_corr_linear_acc
-            ),0)*delta_time*decay_constant
-        #self.vel_integral_odo["linear_vel"] = np.mean((self.vel_integral_odo["linear_vel"],
-        #        self.latest_twist["linear_vel"]),0)
-        for i in range(3):
-            _vel_pointer = self.vel_integral_odo["linear_vel"]
-            if np.abs(_vel_pointer[i]) > self.VELOCITY_MAX:
-                _vel_pointer[i] = np.sign(_vel_pointer[i])*self.VELOCITY_MAX
-
-        '''
-
-        # calculate updated velocity
-        #self.update_velocity(self.vel_integral_odo, stamp=stamp)
-        self.update_pos_integral()
-
-    def _calc_angular_vel(self):
-
-        rospy.loginfo(self.filtered_odo["angular_vel"])
-
-        return np.mean(np.vstack(
-                    [
-                        self.prev_odo["angular_vel"],
-                        self.filtered_odo["angular_vel"]
-                        #self.latest_twist["angular_vel"]
-                    ]
-                ),0)
-
-    def purge_velocity(self):
-        '''
-        set weight 0 for old data
-        '''
-        seconds_ago = 2
-        cutoff = time.time() - seconds_ago
-        for i in range(self.velocity_filter_size):
-            if self.velocity_filter[i,6] < cutoff:
-                self.velocity_filter[i,3:6] = 0
-
-    def update_velocity(self, new_velocity, var=(0,0,0), weight=(1,1,1), stamp=time.time()):
-        self.purge_velocity()
-
-        min_free_ind = np.nan
-        for i in range(self.velocity_filter_size):
-            if np.all(self.velocity_filter[i,3:6] == 0):
-                min_free_ind = i
-                break
-
-        if np.isnan(min_free_ind):
-            rospy.logerr("velocity buffer full")
-            min_free_ind = 0
-
-        #if np.sqrt(new_velocity["linear_vel"][0]**2 + new_velocity["linear_vel"][1]**2) > self.VELOCITY_MAX:
-        #    new_velocity["linear_vel"][0] = 
-        point = (new_velocity["linear_vel"][0], new_velocity["linear_vel"][1], 0)
-        tformed_vel = self.transform_one(point, (0,0,self.pos_integral["angular_pos"][2]))
-
-        var_point = (var[0], var[1], 0)
-        tformed_var = self.transform_one(var_point, (0,0,self.pos_integral["angular_pos"][2]))
-        
-        self.velocity_filter[min_free_ind,0:3] = (tformed_vel[0], tformed_vel[1], new_velocity["linear_vel"][2])
-        self.velocity_filter[min_free_ind,3:6] = weight
-        self.velocity_filter[min_free_ind,6] = stamp
-        self.velocity_filter[min_free_ind,7:10] = (tformed_var[0], tformed_var[1], 0)
-
-    def get_velocity(self):
-        self.purge_velocity()
-        total_measurement_weight = np.sum(self.velocity_filter[:,3:6],axis=0)
-        if np.any(total_measurement_weight == 0):
-            rospy.loginfo("no velocity data")
-            return np.zeros([3]), np.zeros([3])
-        else:
-            normalized_weights = self.velocity_filter[:,3:6]/np.repeat(total_measurement_weight[np.newaxis,:],repeats=self.velocity_filter_size,axis=0)
-            weighted_vel = self.velocity_filter[:,0:3]*normalized_weights
-            weighted_var = self.velocity_filter[:,7:10]*normalized_weights
-            total_var = np.nanvar(self.velocity_filter[:,0:3], axis=0, ddof=np.sum(np.all(self.velocity_filter[:,3:6] == 0, axis=1))) + np.sum(self.velocity_filter[:,7:10], axis=0)
-            rospy.loginfo(f"got velocity: {weighted_vel}")
-            return np.nansum(weighted_vel,axis=0), total_var
-
     def update_pos_integral(self):
         """Performs most of the integration logic.
 
@@ -329,9 +175,9 @@ class Integrator:
         """
 
         # update timer
-        #self.update_timer.cancel()
-        #self.update_timer = threading.Timer(.1, self.update_pos_integral)
-        #self.update_timer.start()
+        self.update_timer.cancel()
+        self.update_timer = threading.Timer(.01, self.update_pos_integral)
+        self.update_timer.start()
 
         # update time
         self.prev_store_stamp = self.latest_store_stamp
@@ -343,9 +189,8 @@ class Integrator:
         #rospy.loginfo(self.vel_integral_odo["linear_vel"])
         #rospy.loginfo(self.latest_twist["linear_vel"])
 
-        linear_velocity, linear_variance = self.get_velocity()
-        linear_velocity[np.isnan(linear_velocity)] = 0
-        linear_variance[np.isnan(linear_variance)] = 0
+        linear_velocity = self.transform_one(np.asarray(self.latest_twist["linear_vel"]), np.asarray([0,0,self.pos_integral["angular_pos"][2]]))[0:3]
+        linear_variance = np.asarray([.1,.1,.1])#self.get_velocity()
         self.pos_integral["linear_pos"] += linear_velocity*delta_time
             #np.nanmean((
                 #prev_vel_integral_odo["linear_vel"],
@@ -372,7 +217,7 @@ class Integrator:
                 #self.latest_twist["linear_vel"]
         #    ),0,ddof=1)*delta_time**2
         self.pos_variance["linear_pos"] += linear_variance*delta_time**2
-        self.pos_variance["angular_pos"] += np.array((.2,.2,.2))*delta_time**2 #np.array((.05,.05,.05))*delta_time**2
+        self.pos_variance["angular_pos"] += np.array((1,1,1))*delta_time**2 #np.array((.05,.05,.05))*delta_time**2
 
         '''np.var((
             self.prev_odo["angular_vel"],

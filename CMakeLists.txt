@@ -15,6 +15,7 @@ find_package(catkin REQUIRED COMPONENTS
   speech_recognition_msgs
   sensor_msgs
   dynamic_reconfigure
+  teleop_twist_keyboard
 )
 
 ## System dependencies are found with CMake's conventions
@@ -115,7 +116,7 @@ find_package(catkin REQUIRED COMPONENTS
 catkin_package(
 #  INCLUDE_DIRS include
 #  LIBRARIES pet
-  CATKIN_DEPENDS freenove_ros respeaker_ros witmotion_ros sensor_msgs raspicam_node
+  CATKIN_DEPENDS freenove_ros respeaker_ros witmotion_ros sensor_msgs raspicam_node teleop_twist_keyboard
 #  DEPENDS system_lib
 )
 

@@ -17,18 +17,22 @@ class OpticalFlow:
     def __init__(self):
 
 
-        self.min_points = 20 #32
-        self.min_descriptors = 400 #1000
-        self.min_variance = 7.5 #15
+        self.min_points = 32 #20
+        self.min_descriptors = 1000 #400
+        self.min_variance = 15 #7.5
 
         self.accumulator = UltraSonicAccumulator()
 
         self.camera_sub = rospy.Subscriber("/raspicam_node/image/compressed", CompressedImage, self.on_image, queue_size=1)
         self.ultra_sub = rospy.Subscriber("ultrasonic_distance", SensorDistance, self.accumulator.on_ultra, queue_size=1)
 
+        self.image = None
+        self.stamp = None
+
         self.prev_points = None
         self.prev_descriptors = None
         self.prev_dots = []
+        self.prev_stamp = None
 
         self.current_distance = 0
 
@@ -42,6 +46,7 @@ class OpticalFlow:
 
     def on_image(self, data):
         
+        self.stamp = data.header.stamp.to_sec()
         int_data = np.frombuffer(data.data, np.uint8)
         image = cv2.imdecode(int_data, cv2.IMREAD_COLOR)
 
@@ -70,7 +75,10 @@ class OpticalFlow:
         cur_points, cur_descriptors = vf.detect(self.image, num_points=128, descriptors_per_point=128)
         if type(self.prev_points) == type(None) or np.shape(self.prev_points)[0] < self.min_points or np.sum(self.prev_descriptors != 0) < self.min_descriptors:
             self.prev_points, self.prev_descriptors = cur_points, cur_descriptors
+            self.prev_stamp = self.stamp
+            rospy.logerr("This should only happen once.")
 
+        rospy.loginfo(f"time difference: {np.around(self.stamp - self.prev_stamp,3)}")
         #rospy.loginfo(f"curpts: {np.shape(cur_points)}")
         #rospy.loginfo(f"curdsc: {np.shape(cur_descriptors)}")
         #rospy.loginfo(f"prpts: {np.shape(prev_points)}")
@@ -86,6 +94,7 @@ class OpticalFlow:
             variance_rule = False
         if count_rule and variance_rule:
             translation, zoom, score = vf.estimate_translation_and_zoom(self.prev_points, cur_points, self.prev_descriptors, cur_descriptors, self.image.shape)
+            rospy.loginfo(f"zoom: {zoom} translation: {translation} score: {score}")
         else:
             #img = np.asarray(self.image, "uint8")
             #img = PIL_Image.fromarray(self.image)
@@ -114,8 +123,7 @@ class OpticalFlow:
         warped_points, warped_descriptors = vf.detect(warped, num_points=128, descriptors_per_point=128)
         _, _, score = vf.estimate_translation_and_zoom(self.prev_points, warped_points, self.prev_descriptors, warped_descriptors, self.image.shape)
         '''
-
-        if score < .4 or np.isinf(score) or np.isnan(score) or zoom < .66 or zoom > 2 or np.any(np.abs(translation) > 500):
+        if np.isinf(score) or np.isnan(score) or zoom < .5 or zoom > 2 or np.any(np.abs(translation) > 250) or score < .25:
             #img = np.asarray(self.image, "uint8")
             #img = PIL_Image.fromarray(self.image)
             #img.save(f"/home/pi/pics/poor_alignment_{time.time()}.jpeg")
@@ -131,7 +139,7 @@ class OpticalFlow:
             self.prev_descriptors = np.copy(cur_descriptors)
             return
 
-        rospy.loginfo(f"zoom: {zoom} translation: {translation} score: {score}")
+        rospy.loginfo(f"zoom ok")
 
         # actually calculate flow from transformation and return
         latest_distance = np.array(self.accumulator.get_data())/100
@@ -148,6 +156,7 @@ class OpticalFlow:
 
         self.prev_points = np.copy(cur_points)
         self.prev_descriptors = np.copy(cur_descriptors)
+        self.prev_stamp = self.stamp
 
         #img = np.asarray(self.image, "uint8")
         #img = PIL_Image.fromarray(self.image)

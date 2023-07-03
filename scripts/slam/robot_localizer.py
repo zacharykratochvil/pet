@@ -103,7 +103,7 @@ class RobotLocalizer(pf.ParticleFilter):
         self.drive_sub = rospy.Subscriber("drive_twist", TwistDuration, self.integrator.on_twist, queue_size=10)
         self.witmotion_sub = rospy.Subscriber("imu", Imu, self.integrator.on_odo, queue_size=1)
         self.ultra_sub = rospy.Subscriber("ultrasonic_distance", SensorDistance, self.ultra_accumulator.on_ultra, queue_size=1)
-        self.optical_sub = rospy.Subscriber("optical_velocity", Twist, self.integrator.on_vision, queue_size=1)
+        #self.optical_sub = rospy.Subscriber("optical_velocity", Twist, self.integrator.on_vision, queue_size=1)
         self.map_sub = rospy.Subscriber("map", PointCloud, self.map, queue_size=1)
 
         self.measurement_pub = rospy.Publisher("measured_particles", PointCloud, queue_size=1)
@@ -200,7 +200,8 @@ class RobotLocalizer(pf.ParticleFilter):
                 #self.particles.data[i]["map"].close()
                 #self.particles.data[i]["map"] = pf.ParticleFilter(self.inner_options)
                 if "map" in self.particles.data[i].keys():
-                    self.particles.data[i]["map"].particles = pf.Particles(self.options["num_particles"], self.options["brick_threshold"])
+                    #options = pf.FilterOptions({"num_particles":self.options["num_particles"], "brick_threshold":self.options["brick_threshold"]})
+                    self.particles.data[i]["map"].particles = pf.Particles(self.inner_options)
                 else:
                     self.particles.data[i]["map"] = pf.ParticleFilter(self.inner_options)
                     '''
@@ -247,14 +248,31 @@ class RobotLocalizer(pf.ParticleFilter):
             delta_pos, var = self.integrator.step()
             rospy.loginfo(f"pos: {delta_pos}; var: {var}")
 
-            # produce a list of random errors to apply to particles
-            variance_multiplier = .7 #.5
-            variance_offset = .1 #.05
-            _args_list = (delta_pos["linear_pos"][0], delta_pos["linear_pos"][1], variance_multiplier*var["linear_pos"][0] + variance_offset, variance_multiplier*var["linear_pos"][1] + variance_offset)
-            lin_error_dist = pf.GaussianDistribution2D(*_args_list)
-            lin_errors = lin_error_dist.draw(self.options["num_particles"])
-            lin_errors = np.hstack([lin_errors, np.zeros([self.options["num_particles"],1])])
+            i = 0
+            variance_offset = 0
+            was_valid = np.zeros([np.shape(self.particles.ref)[0], 2])
+            while np.sum(was_valid) < np.shape(self.particles.ref)[0]*2:
 
+                # produce a list of random errors to apply to particles
+                i += 1
+                variance_multiplier = .7 #.5
+                variance_offset += .1*i #.05
+                _args_list = (delta_pos["linear_pos"][0], delta_pos["linear_pos"][1], variance_multiplier*var["linear_pos"][0] + variance_offset, variance_multiplier*var["linear_pos"][1] + variance_offset)
+                lin_error_dist = pf.GaussianDistribution2D(*_args_list)
+                lin_errors = lin_error_dist.draw(self.options["num_particles"])
+                not_was_valid = -1*(was_valid-1)
+                lin_errors = not_was_valid*lin_errors
+                
+                #lin_errors = np.hstack([lin_errors, np.zeros([self.options["num_particles"],1])])
+
+                for particle_i in range(np.shape(self.particles.ref)[0]):
+                    interpolation = [None,None]
+                    distance = np.sqrt(np.sum(self.particles.ref[particle_i,0:2]**2 + (self.particles.ref[particle_i,0:2]+lin_errors[particle_i,0:2])**2))
+                    for xy in [0,1]:
+                        interpolation[xy] = np.asarray(np.linspace(self.particles.ref[particle_i,xy], self.particles.ref[particle_i,xy]+lin_errors[particle_i,xy], int(np.ceil(distance/.2))))
+                    
+                    was_valid[particle_i,:] = int(0 == np.sum([self.particles.is_brick([x,y]) for x,y in zip(interpolation[0],interpolation[1])]))
+                
             ang_errors = np.random.normal(delta_pos["angular_pos"][2],var["angular_pos"][2],self.options["num_particles"])
 
             # apply deltas to particles
@@ -338,9 +356,9 @@ class RobotLocalizer(pf.ParticleFilter):
                 '''
                 
                 #rospy.logerr(f"particle {added_particles[0,:]}")
-                self.particles.data[i]["map"].resample()
-                if ("map" in self.particles.data[i].keys()) == False:
-                    self.particles.data[i]["map"] = pf.ParticleFilter(self.inner_options)
+                #self.particles.data[i]["map"].resample()
+                #if ("map" in self.particles.data[i].keys()) == False:
+                #    self.particles.data[i]["map"] = pf.ParticleFilter(self.inner_options)
 
             for i in range(np.shape(self.particles.ref)[0]):
                 #rospy.loginfo(self.particles.data[i]["map"].particles[0])
@@ -377,7 +395,9 @@ class RobotLocalizer(pf.ParticleFilter):
 
 
             # compare to map, score
-            self.latest_map_particles = pf.Particles(self.options["num_particles"], self.options["brick_threshold"], ref=self.latest_map)
+            #options = pf.FilterOptions({"num_particles":self.options["num_particles"], "brick_threshold":self.options["brick_threshold"]})
+            self.latest_map_particles = pf.Particles(self.inner_options, ref=self.latest_map)
+
             '''
             num_neighbors = 10
             nn_tree = skln.NearestNeighbors(n_neighbors = num_neighbors, algorithm = "kd_tree",
@@ -392,15 +412,14 @@ class RobotLocalizer(pf.ParticleFilter):
             '''
             
             #avg_distances = []
-            norm_neighbors = []
+            norm_neighbors = np.empty(np.shape(self.particles.ref)[0])
             for i in range(np.shape(self.particles.ref)[0]):
                 local_particle_coords = self.particles.data[i]["map"].particles.ref[:,0:2]
-                num_radius_neighbors = 0
+                num_radius_neighbors = np.zeros(1)
                 rospy.logerr(np.shape(local_particle_coords)[0])
-                for i in range(np.shape(local_particle_coords)[0]):
-                    pass
-                    #num_radius_neighbors += len(self.latest_map_particles.get_inds(local_particle_coords[i,:]))
-                    #num_radius_neighbors += self.latest_map_particles.brick_threshold*self.latest_map_particles.is_brick(local_particle_coords[i,:])
+                for ii in range(np.shape(local_particle_coords)[0]):
+                    num_radius_neighbors += len(self.latest_map_particles.get_inds(local_particle_coords[ii,:]))
+                    num_radius_neighbors += self.latest_map_particles.options["brick_threshold"]*self.latest_map_particles.is_brick(local_particle_coords[ii,:])
 
                 #rospy.loginfo(self.particles.data[i]["map"].particles[:,0:2])
                 #distances = neighbors.flatten()
@@ -412,10 +431,10 @@ class RobotLocalizer(pf.ParticleFilter):
                 norm_neighbors_one = (num_radius_neighbors)/np.shape(local_particle_coords)[0]
                 #don't add extra weight for extremely dense regions
                 max_density = 15
-                norm_neighbors_one = min(max_density, norm_neighbors_one)
-                norm_neighbors.append(norm_neighbors_one)
+                norm_neighbors_one = np.min([max_density, norm_neighbors_one])
+                norm_neighbors[i] = norm_neighbors_one
                 #avg_distances.append(distance)
-                rospy.logerr(f"reweight distance: {norm_neighbors[-1]}")
+                rospy.logerr(f"reweight distance: {norm_neighbors[i]}")
 
             min_dist = np.min(norm_neighbors)
             max_dist = np.max(norm_neighbors)
@@ -566,7 +585,7 @@ if __name__ == "__main__":
             "publish_interval": np.nan,
             "resample_noise_count": np.nan,
 
-            "num_particles": 30,
+            "num_particles": 15,
             #"local_map_update_subset_factor": 10
         }
     options = pf.FilterOptions(options)

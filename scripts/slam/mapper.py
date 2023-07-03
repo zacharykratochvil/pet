@@ -53,9 +53,7 @@ class Mapper(pf.ParticleFilter):
         
         rospy.spin()
 
-    def prune_map(self, data):
-        self.publish()
-        '''
+    def prune_map(self, data):        
 
         #self.prune_timer.cancel()
         if type(self.robot_particles) == type(None):
@@ -67,10 +65,50 @@ class Mapper(pf.ParticleFilter):
         @pf.ParticleFilter.locking(calling_fn="prune_map", timer_name="prune_timer", short_timeout=.01, timer_data=[data])
         def inner_prune(self, *args, **kwargs):
 
+            # return immediately if no data
             measured_particles = pf.ParticleFilter.decloud(data)
             if len(measured_particles) == 0:
                 return True
         
+            # for the first num_particles measured particles loop through and update map
+            n = int(np.ceil(np.shape(measured_particles)[0]/3))
+            num_particles = max(1, n)
+            new_coords = []
+            for measured_i in range(num_particles):
+
+                # select random robot particle as reference
+                ref_index = np.random.randint(len(self.robot_particles))
+                ref_particle = self.robot_particles[ref_index,:]
+
+                # check path of "sight" from robot to measurement for bricks    
+                interpolation = [None,None]
+                distance = np.sqrt(np.sum(ref_particle[0:2]**2 + measured_particles[measured_i,0:2]**2))
+                for xy in [0,1]:
+                    interpolation[xy] = np.asarray(np.linspace(ref_particle[xy], measured_particles[measured_i,xy], int(np.ceil(distance/.2))))
+                
+                # if bricks are found, replace them with a list of particles
+                for i in range(len(interpolation[0])):
+                    xy = (interpolation[0][i], interpolation[1][i])
+                    if self.particles.is_brick(xy) == True:
+                        self.particles.delete_brick(xy)
+
+                        particles_to_add = int(np.ceil(self.particles.options["brick_threshold"]/2))
+                        for i in range(particles_to_add):
+                            new_coords.append(xy)
+
+            if len(new_coords) > 0:
+                new_coords = np.vstack(new_coords) + .1
+                new_particles = np.hstack([new_coords,np.zeros([len(new_coords),1]),np.ones([len(new_coords),1])])
+                    
+                self.particles.add(new_particles)
+                self.particles.data = np.hstack([self.particles.data, [{}]*len(new_particles)])
+
+
+            #interpolation = np.hstack([np.arange(self.particles.ref[:,0], self.particles.ref[:,0]+lin_errors[:,0], .2), np.arange(self.particles.ref[:,1], self.particles.ref[:,1]+lin_errors[:,1], .2)])
+            #was_valid = np.array([[self.particles.is_brick([x,y]), self.particles.is_brick([x,y])] for x,y in interpolation])
+
+
+            '''
             #new_particles = np.empty(np.shape(measured_particles))
             re_weights = set()
 
@@ -114,20 +152,22 @@ class Mapper(pf.ParticleFilter):
                     if test_magnitude < magnitude_scaling*magnitude and -delta_angle < test_angle and test_angle < delta_angle:
                         re_weights.add(particle_inds_to_examine[map_particles_i])
                         reweighted_count += 1
+            '''
                 
             # actually downweight the selected particles
-            indecies = list(re_weights)
-            self.particles[indecies,self.WEIGHT] = self.particles[indecies,self.WEIGHT]/2
+            #indecies = list(re_weights)
+            #self.particles[indecies,self.WEIGHT] = self.particles[indecies,self.WEIGHT]/2
             #rospy.loginfo(reweighted_count)
 
             #self.particles = np.vstack([self.particles, new_particles])
             #self.particle_data = np.hstack([self.particle_data, [{}]*len(new_particles)])
+            
 
             self.publish()
         
         inner_prune(self)
 
-        ''' 
+        '''
         if self.measure_count % 5 == 0:
             self.measure_count = 1
             resampled = self.resample()
@@ -136,6 +176,7 @@ class Mapper(pf.ParticleFilter):
             self.measure_count += 1
             #rospy.loginfo("done; thread count: " + str(threading.active_count()))
             return True
+        '''
 
         #return True
 

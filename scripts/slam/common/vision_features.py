@@ -203,6 +203,31 @@ def meanshift_plus(X, bandwidth, tolerance, max_iter):
 
 def kernel_cluster_extreme(particles, scale = .2):
     adjacent_cells = (np.asarray((-1,-1)),np.asarray((-1,0)),np.asarray((-1,1)),np.asarray((0,-1)),np.asarray((0,0)),np.asarray((0,1)),np.asarray((1,-1)),np.asarray((1,0)),np.asarray((1,1)))    
+    coords = set(particles._hash.keys())
+    for coord in list(coords):
+        if len(particles.get_inds(coord)) == 0:
+            coords.remove(coord)
+    coords = list(coords)
+    counts = np.zeros(len(coords))
+
+    for i, coord in enumerate(coords):    
+        # compute count of each cell based on adjacent cells
+        for v in adjacent_cells:
+            key = (coord[0] + v[0], coord[1] + v[1])
+            counts[i] += len(particles.get_inds(coord))
+
+    xy = np.argmax(counts)
+    fine_coord_inds = []
+    for v in adjacent_cells:
+        key = (coords[xy][0] + v[0], coords[xy][1] + v[1])
+        fine_coord_inds.extend(particles.get_inds(key))
+    fine_coords = particles.ref[fine_coord_inds,:]
+    return np.mean(fine_coords[:,0:2], axis=0)[np.newaxis,:]
+
+
+'''
+def kernel_cluster_extreme(particles, scale = .2):
+    adjacent_cells = (np.asarray((-1,-1)),np.asarray((-1,0)),np.asarray((-1,1)),np.asarray((0,-1)),np.asarray((0,0)),np.asarray((0,1)),np.asarray((1,-1)),np.asarray((1,0)),np.asarray((1,1)))    
     coords = np.vstack(list(particles._hash.keys()))
     x_lim = (np.min(coords[:,0]), np.max(coords[:,0]))
     y_lim = (np.min(coords[:,1]), np.max(coords[:,1]))
@@ -223,6 +248,7 @@ def kernel_cluster_extreme(particles, scale = .2):
     fine_coord_inds = particles.get_inds(flat_all_coords[xy,:])
     fine_coords = particles.ref[fine_coord_inds,:]
     return np.mean(fine_coords[:,0:2], axis=0)[np.newaxis,:]
+'''
 
 # From https://stackoverflow.com/questions/23494037/how-do-you-calculate-the-median-of-a-set-of-angles#:~:text=To%20get%20the%20median%20of,have%20more%20than%20one%20angle.
 def angle_interpol(a1, w1, a2, w2):
